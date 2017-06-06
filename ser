@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+host_cache_path="$HOME/.ser"
+host_cache_file="$HOME/.ser/cache"
+host_cache_date="$HOME/.ser/cache_date"
+
+config_files=("/etc/ssh/ssh_config")
+
+[[ ! -d "$host_cache_path" ]] && mkdir "$host_cache_path"
+[[ -a "$HOME/.ssh/config" ]] && config_files+=("$HOME/.ssh/config")
+
+LIGHT_GRAY='\033[0;37m'
+NC='\033[0m'
+
+error () { echo "$1" >&2; exit 2; }
+
+read_config() {
+	trim () { while read -r line; do echo "$line"; done; }
+
+	check_host_name() {
+		if [[ "$1" == "*" ]]; then return 0; fi
+		if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
+		return 0
+	}
+
+	local IFS='
+'
+	set -f
+
+	local host; local content
+
+	for l in $(cat "${@}" | trim) 
+	do
+		local IFS='#'; read -r -a l <<< "$l"; local IFS=" "; local options=()
+
+		for p in ${l[0]}; do options+=($p); done
+
+		case ${options[0]} in
+			Host)
+				if [[ -n "$host" ]]; then
+					[[ -n ${host[3]} ]] && host_port=":${host[3]}" || host_port=""
+					content+="${host[0]} ${host[1]}@${host[2]}${host_port}\n"	
+				fi
+
+				check_host_name "${options[1]}" || error "sorry, patterns not supported: ${options[1]}"
+
+				if [[ ${options[1]} == "*" ]]; then
+					host=(); continue
+				fi
+
+				host=(${options[1]} $USER "" "") ;;
+			User) 
+				[[ -n "${host[*]}" ]] && host[1]=${options[1]} ;;
+			HostName) 
+				[[ -n "${host[*]}" ]] && host[2]=${options[1]} ;;
+			Port) 
+				[[ -n "${host[*]}" ]] && host[3]=${options[1]} ;;
+			Match)
+				error "sorry, 'Match' option not supported" ;;
+			*) ;;
+		esac
+	done
+
+	echo -e "$content"
+}
+
+need_flush() {
+	local last; local cur
+
+	[[ -a "$host_cache_date" ]] && last=$(cat "$host_cache_date") 
+
+	case $(uname) in
+		Linux) 
+			cur=$(stat --printf="%Y" "$@" | shasum) ;;
+		Darwin) 
+			cur=$(stat -f "%m" "$@" | shasum) ;;
+		*) 
+			error "failed to read file modify time on $(uname)" ;;
+	esac
+
+	if [[ "$last" == "$cur" ]]; then
+		return 1
+	else
+		echo "$cur" > "$host_cache_date"
+		return 0
+	fi
+}
+
+if need_flush "${config_files[@]}"; then
+	content=$(read_config "${config_files[@]}")
+	echo "$content" > "$host_cache_file"
+else
+	content=$(cat "$host_cache_file")
+fi
+
+show_list () {
+	local IFS='
+'
+	local i=0
+	for l in $1 
+	do
+		local IFS=' '; read -r -a host <<< "$l"
+		((i++)); echo -e "$i) ${LIGHT_GRAY}${host[0]}${NC} - ${host[1]}"
+	done
+}
+
+ssh_connect () {
+	re='^[0-9]+$'
+	! [[ $1 =~ $re ]] && echo "invalid command or index: $1" && exit 2
+	IFS=' '; read -r -a host <<< "$(sed -n "$1p" <<< "$content")"
+	[[ -z "${host[*]}" ]] && exit 2
+	echo "connecting: ${host[0]}"
+	ssh "${host[0]}" $"$2"
+}
+
+[[ -z "$1" ]] && show_list "$content" && exit 0
+
+case $1 in
+	o | open) ;;
+	name) ;;
+	*) ssh_connect "$@" ;;
+esac
+
