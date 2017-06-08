@@ -1,123 +1,261 @@
 #!/usr/bin/env bash
 
+## General options ## 
+
 host_cache_path="$HOME/.ser"
 host_cache_file="$HOME/.ser/cache"
 host_cache_date="$HOME/.ser/cache_date"
 
 config_files=("/etc/ssh/ssh_config")
 
-[[ ! -d "$host_cache_path" ]] && mkdir "$host_cache_path"
-[[ -a "$HOME/.ssh/config" ]] && config_files+=("$HOME/.ssh/config")
-
 LIGHT_GRAY='\033[0;37m'
 NC='\033[0m'
 
 error () { echo "$1" >&2; exit 2; }
 
+## Config reader ## 
+
 read_config() {
-	trim () { while read -r line; do echo "$line"; done; }
+    trim () { while read -r line; do echo "$line"; done; }
 
-	check_host_name() {
-		if [[ "$1" == "*" ]]; then return 0; fi
-		if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
-		return 0
-	}
+    check_host_name() {
+        if [[ "$1" == "*" ]]; then return 0; fi
+        if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
+        return 0
+    }
 
-	local IFS='
+    local IFS='
 '
-	set -f
+    set -f
 
-	local host; local content
+    local host; local content
 
-	for l in $(cat "${@}" | trim) 
-	do
-		local IFS='#'; read -r -a l <<< "$l"; local IFS=" "; local options=()
+    for l in $(cat "${@}" | trim) 
+    do
+        local IFS='#'; read -r -a l <<< "$l"; local IFS=" "; local options=()
 
-		for p in ${l[0]}; do options+=($p); done
+        for p in ${l[0]}; do options+=($p); done
 
-		case ${options[0]} in
-			Host)
-				if [[ -n "$host" ]]; then
-					[[ -n ${host[3]} ]] && host_port=":${host[3]}" || host_port=""
-					content+="${host[0]} ${host[1]}@${host[2]}${host_port}\n"	
-				fi
+        case ${options[0]} in
+            Host)
+                if [[ -n "$host" ]]; then
+                    [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
+                    content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
+                fi
 
-				check_host_name "${options[1]}" || error "sorry, patterns not supported: ${options[1]}"
+                check_host_name "${options[1]}" || error "sorry, patterns not support: ${options[1]}"
 
-				if [[ ${options[1]} == "*" ]]; then
-					host=(); continue
-				fi
+                if [[ ${options[1]} == "*" ]]; then
+                    host=(); continue
+                fi
 
-				host=(${options[1]} $USER "" "") ;;
-			User) 
-				[[ -n "${host[*]}" ]] && host[1]=${options[1]} ;;
-			HostName) 
-				[[ -n "${host[*]}" ]] && host[2]=${options[1]} ;;
-			Port) 
-				[[ -n "${host[*]}" ]] && host[3]=${options[1]} ;;
-			Match)
-				error "sorry, 'Match' option not supported" ;;
-			*) ;;
-		esac
-	done
+                host=(${options[1]} $USER "" "") ;;
+            User) 
+                [[ -n "${host[*]}" ]] && host[1]=${options[1]} ;;
+            HostName) 
+                [[ -n "${host[*]}" ]] && host[2]=${options[1]} ;;
+            Port) 
+                [[ -n "${host[*]}" ]] && host[3]=${options[1]} ;;
+            Match)
+                error "sorry, 'Match' option not support" ;;
+            *) ;;
+        esac
+    done
 
-	echo -e "$content"
+    echo -e "$content"
 }
 
 need_flush() {
-	local last; local cur
+    local last; local cur
 
-	[[ -a "$host_cache_date" ]] && last=$(cat "$host_cache_date") 
+    [[ -a "$host_cache_date" ]] && last=$(cat "$host_cache_date") 
 
-	case $(uname) in
-		Linux) 
-			cur=$(stat --printf="%Y" "$@" | shasum) ;;
-		Darwin) 
-			cur=$(stat -f "%m" "$@" | shasum) ;;
-		*) 
-			error "failed to read file modify time on $(uname)" ;;
-	esac
+    case $(uname) in
+        Linux) 
+            cur=$(stat --printf="%Y" "$@" | shasum) ;;
+        Darwin) 
+            cur=$(stat -f "%m" "$@" | shasum) ;;
+        *) 
+            error "failed to read file modify time on $(uname)" ;;
+    esac
 
-	if [[ "$last" == "$cur" ]]; then
-		return 1
-	else
-		echo "$cur" > "$host_cache_date"
-		return 0
-	fi
+    if [[ "$last" == "$cur" ]]; then
+        return 1
+    else
+        echo "$cur" > "$host_cache_date"
+        return 0
+    fi
 }
 
-if need_flush "${config_files[@]}"; then
-	content=$(read_config "${config_files[@]}")
-	echo "$content" > "$host_cache_file"
-else
-	content=$(cat "$host_cache_file")
-fi
+host_index=0
+host=()
+hosts=()
+
+match_host () { 
+    eval "[[ $1 == $2 ]]" 2>/dev/null # ignore syntax error
+}
+
+next_host () {
+    [[ -z "${hosts[host_index]}" ]] && return 1
+    local IFS=' '; host=(${hosts[host_index]})
+    ((host_index++))
+    return 0
+}
+
+token () {
+    local s=${1//'{name}'/${host[0]}}
+    s=${s//'{i}'/${host_index}}
+    echo "$s"
+}
+
+select_hosts () {
+    local name="$1"
+    [[ -z "$name" ]] && name='*' 
+    set -f
+
+    local num_re='^[0-9]+$'
+
+    if [[ "$name" =~ $num_re ]]; then 
+        hosts+=("$(sed -n "${name}p" <<< "$content")")
+        return
+    fi
+
+    local IFS='
+'
+    for l in $content 
+    do
+        local IFS=' '; local host=($l)
+        match_host "${host[0]}" "${name}" && hosts+=("$l")
+    done
+}
+
+help () {
+    case $1 in
+        name)
+echo 'usage: ser name [name] 
+
+print config names
+
+examples:
+    ser name
+    ser name "*"
+    ser name "my*"
+' ;;
+        cp) 
+echo 'usage: ser cp <from> <to> [pass to scp options] 
+
+copy file to hosts 
+
+examples:
+    ser cp "file" "*:~/"
+    ser cp "*:~/file" "save/to/path/file-{name}"
+    ser cp "dir" "*:~/" -r
+    ser cp "*:~/dir" "save/to/path/{name}" -r
+
+tokens:
+    {i} - config index
+    {name} - config name';;
+        *) 
+echo 'usage: ser <command> 
+
+Type "ser help <command>" for help on a specific command.
+
+Available commands:
+    <hostname or index> : open ssh client
+    name                : show config names  
+    cp                  : copy file to hosts
+    help                : show this message
+
+https://github.com/frimin/ser' ;;
+    esac
+}
 
 show_list () {
-	local IFS='
+    local host=()
+    local IFS='
 '
-	local i=0
-	for l in $1 
-	do
-		local IFS=' '; read -r -a host <<< "$l"
-		((i++)); echo -e "$i) ${LIGHT_GRAY}${host[0]}${NC} - ${host[1]}"
-	done
+    local i=0
+    for l in $1 
+    do
+        local IFS=' '; read -r -a host <<< "$l"
+        local host_port=""
+        ! [[ "${host[3]}" == "#" ]] && host_port=":${host[3]}"
+        ((i++)); echo -e "$i) ${LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
+    done
 }
 
-ssh_connect () {
-	re='^[0-9]+$'
-	! [[ $1 =~ $re ]] && echo "invalid command or index: $1" && exit 2
-	IFS=' '; read -r -a host <<< "$(sed -n "$1p" <<< "$content")"
-	[[ -z "${host[*]}" ]] && exit 2
-	echo "connecting: ${host[0]}"
-	ssh "${host[0]}" $"$2"
-}
+[[ ! -d "$host_cache_path" ]] && mkdir "$host_cache_path"
+[[ -a "$HOME/.ssh/config" ]] && config_files+=("$HOME/.ssh/config")
 
-[[ -z "$1" ]] && show_list "$content" && exit 0
+if need_flush "${config_files[@]}"; then
+    content=$(read_config "${config_files[@]}")
+    echo "$content" > "$host_cache_file"
+else
+    content=$(cat "$host_cache_file")
+fi
+
+if [[ -z "$1" ]]; then 
+    show_list "$content"; exit
+fi
 
 case $1 in
-	o | open) ;;
-	name) ;;
-	*) ssh_connect "$@" ;;
+    help)
+        help "$2" ;;
+    name)
+        select_hosts "$2"
+
+        while next_host; 
+        do
+            echo "${host[0]}"
+        done ;;
+    cp)
+        set -f; IFS=':'
+        from=($2); to=($3)
+        [[ ${#from[@]} -lt 2 && ${#to[@]} -lt 2 ]] && error "need to pass <host> or <index> for copy to or copy from" 
+
+        if [[ ${#from[@]} -lt 2 ]]; then
+            pattern="${to[0]}"
+            from_path="$2"    
+            from_head=""
+            to_head="<host>:"
+            to_path="${3#*:}"
+        else
+            pattern="${from[0]}"
+            from_head="<host>:"
+            from_path="${2#*:}"
+            to_head=""
+            to_path="$3"
+        fi
+
+        # echo "pattern \"$pattern\", ${from_head}${from_path} => ${to_head}${to_path}"
+
+        select_hosts "$pattern"
+
+        pass_options=(${@:4})
+
+        while next_host; 
+        do
+            [[ -n "$from_head" ]] && from_head="${host[0]}:"
+            [[ -n "$to_head" ]] && to_head="${host[0]}:"
+
+            arg0="${from_head}$(token "${from_path}")"
+            arg1="${to_head}$(token "${to_path}")"
+
+            echo "copy \"${arg0}\" to \"${arg1}\""
+
+            if ! [[ "${host[3]}" == "#" ]]; then
+                scp -P "${host[3]}" ${pass_options[@]} "${arg0}" "${arg1}" || exit
+            else
+                scp ${pass_options[@]} "${arg0}" "${arg1}" || exit
+            fi
+        done ;;
+    *)
+        select_hosts "$1"
+
+        while next_host; 
+        do
+            [[ -z "$2" ]] && echo "connecting \"${host[0]}\""
+            ssh "${host[0]}" $"$2" || exit 1
+        done ;;
 esac
 
