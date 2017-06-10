@@ -4,40 +4,40 @@ Easy to use your ssh config (**/etc/ssh/ssh_config**, **~/.ssh/config**).
 
 Based **ssh**, **scp** (etc...).
 
-## Install
+## INSTALL
 
 	git clone https://github.com/frimin/ser ~/.ser
 	echo 'PATH=$HOME/.ser:$PATH; export PATH' >> ~/.bash_profile
 
-## Usage
+## USAGE
 
-### show all hosts
+### Show all hosts
 
 	ser
 	
 ![](imgs/list.gif)
 
-### ssh login
+### SSH login
 
 	ser <number or name> [command]
 
 ![](imgs/connect.gif)
 	
-### copy file to all hosts
+### Copy file to all hosts
 
 	ser cp "file" "*:~/"
 
 ![](imgs/cp.gif)
 	
-### copy file from all hosts
+### Copy file from all hosts
 
 	ser cp "*:~/file" "save/to/path/file-{name}"
 	
-### get help
+### Get help
 
 	ser help
 	
-## ssh config limited support
+### SSH config limited support
 	
 The **ser** script need to read these option from each host config:
 	
@@ -63,7 +63,6 @@ So, config file should be like:
 	# ...
 	
 ## TODO
-* [ ] ssh command result redirect to file
 * [ ] LocalForward / RemoteForward connect on background and auto reconnect
 * [ ] support ssh config patterns
 * [ ] support Match options
