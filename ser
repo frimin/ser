@@ -6,6 +6,8 @@ host_cache_path="$HOME/.ser"
 host_cache_file="$HOME/.ser/cache"
 host_cache_date="$HOME/.ser/cache_date"
 
+version='0.0.2'
+
 config_files=("/etc/ssh/ssh_config")
 
 LIGHT_GRAY='\033[0;37m'
@@ -38,7 +40,7 @@ read_config() {
 
         case ${options[0]} in
             Host)
-                if [[ -n "$host" ]]; then
+                if [[ -n "${host[*]}" ]]; then
                     [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
                     content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
                 fi
@@ -61,6 +63,12 @@ read_config() {
             *) ;;
         esac
     done
+ 
+    # handle last one
+    if [[ -n "${host[*]}" ]]; then
+        [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
+        content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
+    fi
 
     echo -e "$content"
 }
@@ -72,9 +80,9 @@ need_flush() {
 
     case $(uname) in
         Linux) 
-            cur=$(stat --printf="%Y" "$@" | shasum) ;;
+            cur=$(sha1sum <<< "$version $(stat --printf="%Y" "$@")") ;;
         Darwin) 
-            cur=$(stat -f "%m" "$@" | shasum) ;;
+            cur=$(shasum <<< "$version $(stat -f "%m" "$@")") ;;
         *) 
             error "failed to read file modify time on $(uname)" ;;
     esac
@@ -153,6 +161,20 @@ examples:
     ser cp "*:~/dir" "save/to/path/{name}" -r
 
 tokens:
+    (see "ser help o" tokes section)';;
+        o) 
+echo 'usage: ser o <hostname|index> [command] [redirect result to file] 
+
+login or executed command on the remote host
+
+examples:
+    ser "host1"
+    ser o "host1"
+    ser "host1"
+    ser "*" "ls"
+    ser "*" "ls" "result-{name}"
+
+tokens:
     {i} - config index
     {name} - config name';;
         *) 
@@ -161,12 +183,13 @@ echo 'usage: ser <command>
 Type "ser help <command>" for help on a specific command.
 
 Available commands:
-    <hostname or index> : open ssh client
-    name                : show config names  
-    cp                  : copy file to hosts
-    help                : show this message
+    o | <hostname|index>  : open ssh client
+    name                    : show config names  
+    cp                      : copy file to hosts
+    help                    : show this message
+'
+echo "ver:${version},github:https://github.com/frimin/ser" ;;
 
-https://github.com/frimin/ser' ;;
     esac
 }
 
@@ -197,6 +220,25 @@ fi
 if [[ -z "$1" ]]; then 
     show_list "$content"; exit
 fi
+
+ssh_connect () {
+    select_hosts "$1"
+
+    while next_host; 
+    do
+        [[ -z "$2" ]] && echo "connecting \"${host[0]}\""
+
+        if [[ -n "$3" ]]; then
+            ssh "${host[0]}" $"$2" > "$(token "$3")" || exit
+        else
+            ssh "${host[0]}" $"$2" || exit
+        fi
+    done
+
+    [[ $host_index -eq 0 ]] && error "no matching host(s): $1"
+
+    exit 0
+}
 
 case $1 in
     help)
@@ -249,13 +291,9 @@ case $1 in
                 scp ${pass_options[@]} "${arg0}" "${arg1}" || exit
             fi
         done ;;
+    o)
+        set -f; ssh_connect ${@:2} ;; 
     *)
-        select_hosts "$1"
-
-        while next_host; 
-        do
-            [[ -z "$2" ]] && echo "connecting \"${host[0]}\""
-            ssh "${host[0]}" $"$2" || exit 1
-        done ;;
+        set -f; ssh_connect $@ ;; 
 esac
 
