@@ -3,22 +3,31 @@
 ## General options ## 
 
 host_cache_path="$HOME/.ser"
-host_cache_file="$HOME/.ser/cache"
-host_cache_date="$HOME/.ser/cache_date"
+host_cache_file="$host_cache_path/cache"
+host_cache_date="$host_cache_path/cache_date"
+host_forward_options="$host_cache_path/forward_options"
+host_forward_sessions_dirname='forward_sessions'
+host_forward_sessions="$host_cache_path/$host_forward_sessions_dirname"
+host_forward_crontab_task="$HOME/.ser/forward_crontab_task"
 
-version='0.0.2'
+version='0.0.3a'
 
 config_files=("/etc/ssh/ssh_config")
 
-LIGHT_GRAY='\033[0;37m'
+COLOR_LIGHT_GRAY='\033[0;37m'
+COLOR_GREEN='\033[0;32m'
+COLOR_RED='\033[0;31m'
 NC='\033[0m'
 
+REGEXP_NUMBER='^[0-9]+$'
+REGEXP_LETTER='^[A-Za-z]+$'
+
 error () { echo "$1" >&2; exit 2; }
+trim () { while read -r line; do echo "$line"; done; }
 
 ## Config reader ## 
 
 read_config() {
-    trim () { while read -r line; do echo "$line"; done; }
 
     check_host_name() {
         if [[ "$1" == "*" ]]; then return 0; fi
@@ -183,10 +192,21 @@ echo 'usage: ser <command>
 Type "ser help <command>" for help on a specific command.
 
 Available commands:
-    o | <hostname|index>  : open ssh client
-    name                    : show config names  
-    cp                      : copy file to hosts
-    help                    : show this message
+    o|<hostname|index>        : open ssh client
+    name                      : list all config names  
+    cp                        : copy file to hosts
+
+    forward-new|f             : create a new forward
+    forward-delete|del        : delete forward
+    forward-list|fl           : list all forward
+    forward-generate|gen      : generate sessions configs
+
+    session-start|start       : start sessions
+    session-stop|stop         : stop sessions
+    session-list|sl           : list all sessions
+    session-check-step|step   : reconnect or add forward to sessions if enabled
+
+    help                      : show this message
 '
 echo "ver:${version},github:https://github.com/frimin/ser" ;;
 
@@ -203,7 +223,7 @@ show_list () {
         local IFS=' '; read -r -a host <<< "$l"
         local host_port=""
         ! [[ "${host[3]}" == "#" ]] && host_port=":${host[3]}"
-        ((i++)); echo -e "$i) ${LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
+        ((i++)); echo -e "$i) ${COLOR_LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
     done
 }
 
@@ -238,6 +258,176 @@ ssh_connect () {
     [[ $host_index -eq 0 ]] && error "no matching host(s): $1"
 
     exit 0
+}
+
+select_forward() {
+    touch "$host_forward_options"
+    forward_index=0
+    forward=()
+    local IFS='
+'
+    forwards=($(cat "$host_forward_options"))
+}
+
+# $1 - forward type: 'local' or 'remote'
+# $2 - host
+# $3 - port
+# $4 - hostname (optional)
+select_forward_exists_port() {
+    touch "$host_forward_options"
+    forward_index=0
+    forward=()
+    forwards=()
+
+    local pattern
+
+    case "$1" in 
+        local) pattern="LocalForward $2" ;;
+        remote) pattern="RemoteForward \d+ $2" ;;
+        *) error 'invalid forward type' ;;
+    esac
+
+    local ret
+    ret="$(grep -E "$pattern" "$host_forward_options")"
+
+    if [[ -z "$3" ]]; then
+        local IFS='
+'
+        forwards=($ret)
+        return 0
+    fi
+
+    # avoid pattern contains hostname
+
+    local IFS='
+'
+    for l in $ret 
+    do
+        local IFS=' '; local info=($l)
+        if [[ "${info[0]}" == "$3" ]]; then
+            forwards+=("$l")
+        fi
+    done
+}
+
+next_forward () {
+    [[ -z "${forwards[forward_index]}" ]] && return 1
+    local IFS=' '; forward=(${forwards[forward_index]})
+    ((forward_index++))
+    return 0
+}
+
+# $1 - name of host
+# $2 - forward type: 'local' or 'remote'
+# $3 - local address:port
+# $4 - remote address:port
+# $5 - session name
+create_forward() {
+    case "$2" in 
+        local|remote) ;;
+        *) error 'invalid forward type' ;;
+    esac
+
+    echo "$1 $2 $3 $4 $5" >> "$host_forward_options"
+} 
+
+generate_forward_scripts() {
+    if [[ ! -d $host_forward_sessions ]]; then
+        mkdir -p "$host_forward_sessions"
+    fi
+
+    /bin/rm -f "$host_forward_sessions"/*.sh
+    /bin/rm -f "$host_forward_sessions"/*.session
+
+    select_forward
+
+    mainfile="$host_forward_sessions/main.sh"
+
+    while next_forward;
+    do
+        bashfile="$host_forward_sessions/${forward[0]}_${forward[4]}.sh"
+        sessionfile="$host_forward_sessions/${forward[0]}_${forward[4]}.session"
+
+        if [[ ! -a $bashfile ]]; then
+            echo -e "#/usr/bin/env bash\n[[ -a $host_forward_sessions/${forward[0]}_${forward[4]}.start ]] && ssh -fN '${forward[0]}' \c" > "$bashfile"
+            echo -e " -o 'ControlMaster=auto' -o 'ControlPath=$host_forward_sessions/${forward[0]}_${forward[4]}.sock' -o 'ExitOnForwardFailure=yes' \c" >> "$bashfile"
+            echo -e "-o 'ConnectTimeout=30' -o 'ServerAliveInterval=30' -o 'ServerAliveCountMax=3' -o 'BatchMode=yes' \c" >> "$bashfile"
+
+            echo ". '$bashfile'" >> "$mainfile"
+        fi
+
+        local forward_opt
+
+        case "${forward[1]}" in 
+            local) forward_opt='-L' ;;
+            remote) forward_opt='-R' ;;
+            *) error "invalid forward line: '${forward[*]}'" ;;
+        esac
+
+        echo -e "$forward_opt '${forward[2]}:${forward[3]}' \c" >> "$bashfile" 
+        echo "${forward[1]} ${forward[2]} ${forward[3]}" >> "$sessionfile" 
+    done
+}
+
+read_session_alived_status() {
+    pgrep -fl ssh | grep -E '^[0-9]+ ssh .*'"$host_forward_sessions_dirname"
+}
+
+read_session_enabled_status() {
+    cat "$host_forward_sessions/"*.enabled 2>/dev/null
+}
+
+select_session() {
+    session_alive_status=$(read_session_alived_status)
+
+    session_index=0
+    session=()
+    sessions=()
+
+    local name
+
+    for file in $host_forward_sessions/*.session
+    do
+        name=$(basename "$file")
+        name="${name%.*}"
+        sessions+=("$name")
+    done
+}
+
+next_session () {
+    [[ -z "${sessions[session_index]}" ]] && return 1
+    local IFS='_'; session=(${sessions[session_index]})
+    ((session_index++))
+    return 0
+}
+
+session_info() {
+    cat "$host_forward_sessions/${session[0]}_${session[1]}.session"
+}
+
+# $1 - host name
+# $2 - session name
+
+session_alive() {
+    local count
+
+    count="$(grep "ControlPath=$host_forward_sessions/$1_$2.sock" <<< "$session_alive_status" | wc -l | trim)"
+
+    if [[ $count -eq 0 ]]; then
+        #SESSION_PID=''
+        return 1
+    fi
+
+    if [[ $count -eq 1 ]]; then
+        #local IFS=' '
+        #arr=($(grep "ControlPath=$host_forward_sockets/$1_$2.sock" <<< "$session_alive_status"))
+        #SESSION_PID=${arr[0]}
+        # remove it 
+        session_alive_status=$(grep -v "ControlPath=$host_forward_sessions/$1_$2.sock" <<< "$session_alive_status")
+        return 0
+    fi
+    
+    error "invalid process alive count"
 }
 
 case $1 in
@@ -293,6 +483,191 @@ case $1 in
         done ;;
     o)
         set -f; ssh_connect ${@:2} ;; 
+    fl|forward-list)
+        select_forward
+
+        i=0
+        while next_forward;
+        do
+            ((i++))
+
+            forward_session="${forward[4]}"
+
+            if [[ 'default' == "$forward_session" ]]; then
+                forward_session=""
+            else
+                forward_session=":$forward_session"
+            fi
+
+            case "${forward[1]}" in 
+                local) echo -e "$i) ${COLOR_LIGHT_GRAY}${forward[0]}${NC}${forward_session} - <listen> ${forward[2]} <= ${forward[3]}" ;;
+                remote) echo -e "$i) ${COLOR_LIGHT_GRAY}${forward[0]}${NC}${forward_session} - ${forward[2]} => <listen> ${forward[3]}" ;;
+                *) error "invalid forward line: '${forward[*]}'" ;;
+            esac
+        done
+        ;;
+    f|forward) 
+        set -f;
+
+        [[ -z "$2" ]] && error "no hostname or index given"
+
+        select_hosts "$2"
+
+        ! next_host && error "no matching host"
+
+        echo "Create forward for \"${host[0]}\":" 
+        echo ""
+        echo "(l)ocal: <listen> localhost <= <read> ${host[2]}" 
+        echo "(r)emote: <read> localhost => <listen> ${host[2]}" 
+        echo ""
+
+        while true; 
+        do
+            read -r -p "Enter forward type: "  
+            case "$REPLY" in 
+                l) forward_type='local'; local_for='listen'; remote_for='read'; break ;;
+                r) forward_type='remote'; local_for='read'; remote_for='listen'; break ;;
+                *) echo 'Please enter "l" for local forward or "r" for remote forward' ;;
+            esac
+        done 
+
+        read -r -p "Enter local address for $local_for (optional): "  
+
+        if [[ -z $REPLY ]]; then
+            local_addr='127.0.0.1' 
+        else
+            local_addr=$(trim <<< "$REPLY")
+        fi
+
+        while true; 
+        do
+            read -r -p "Enter port of $local_addr for $local_for: "  
+
+            if [[ "$REPLY" =~ $REGEXP_NUMBER ]]; then 
+                local_port="$REPLY"
+                break
+            fi
+
+            echo 'Please enter valid port'
+        done
+
+        read -r -p "Enter remote address for $remote_for (optional): "  
+
+        if [[ -z $REPLY ]]; then
+            remote_addr='127.0.0.1' 
+        else
+            remote_addr=$(trim <<< "$REPLY")
+        fi
+
+        while true; 
+        do
+            read -r -p "Enter port of $remote_addr on host ${host[2]} for $remote_for: "  
+
+            if [[ $REPLY =~ $REGEXP_NUMBER ]]; then 
+                remote_port="$REPLY"
+                break
+            fi
+
+            echo 'Please enter valid port'
+        done
+
+        while true; 
+        do
+            read -r -p "Enter name of connect session (optional): "  
+
+            if [[ -z $REPLY ]]; then
+                session_name='default' 
+                break
+            fi
+
+            if [[ $REPLY =~ $REGEXP_LETTER ]]; then 
+                session_name="$REPLY"
+                break
+            fi
+
+            echo 'Please enter valid name, only use letters.'
+        done
+
+        if create_forward "${host[0]}" "$forward_type" "$local_addr:$local_port" "$remote_addr:$remote_port" "$session_name"; then
+            echo 'Forward add succeed (｡・`ω´･).'
+        else
+            error 'Failed to add.'
+        fi ;;
+    gen|forward-generate)
+        generate_forward_scripts 
+
+        filename="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+        crontab_task="0-59   *   *   *   *   bash '$filename' forward-check-step"
+        echo "$crontab_task" > "$host_forward_crontab_task" 
+        echo "Forward scripts generate finished."
+        echo "(Don't forget set task to crontab for check sessions alive : 'crontab $host_forward_crontab_task')"
+        ;;
+    step|session-check-step)
+        bash "$host_forward_sessions/main.sh" ;;
+    session-list|sl)
+        [[ ! -d "$host_forward_sessions" ]] && exit 0
+
+        select_session
+
+        while next_session
+        do
+            if session_alive "${session[0]}" "${session[1]}"; then
+                state=" [${COLOR_GREEN}connected${NC}]"
+            else
+                state=" [${COLOR_RED}disconnect${NC}]"
+            fi
+
+            echo -e "$session_index) ${session[0]} - ${session[1]}${state}"
+
+            IFS='
+'
+            while read -r LINE
+            do
+                IFS=' '
+                info=($LINE)
+                case "${info[0]}" in 
+                    local) echo " - LocalForward ${info[1]} <= ${info[2]}" ;;
+                    remote) echo " - RemoteForward ${info[1]} => ${info[2]}" ;;
+                    *) error "invalid line: '$LINE'" ;;
+                esac
+            done <<< "$(session_info)"
+
+        done ;;
+    session-stop|stop)
+        if [[ -z $2 ]]; then
+            host_name='*'
+        else
+            host_name=$2
+        fi
+
+        if [[ -z $3 ]]; then
+            session_name='*'
+        else
+            session_name=$3
+        fi
+
+        IFS='
+'
+        pid_list=()
+        while read -r LINE
+        do
+            if [[ "$LINE" == *"$host_forward_sessions/"${host_name}_${session_name}\.sock* ]]; then
+                IFS=' '
+                arr=($LINE)
+                pid="${arr[0]}"
+                pid_list+=("${arr[0]}")
+                name="$(grep -o "$host_forward_sessions_dirname"'/.*\.sock' <<< "$LINE")"
+                name=$(basename "$name")
+                name="${name%.*}"
+                IFS='_'
+                arr=($name)
+
+                echo "[pid:$pid] ${arr[0]} - ${arr[1]}"
+
+                kill -s INT "$pid"
+            fi
+        done <<< "$(read_session_alived_status)"
+        ;;
     *)
         set -f; ssh_connect $@ ;; 
 esac
