@@ -21,6 +21,8 @@ NC='\033[0m'
 
 REGEXP_NUMBER='^[0-9]+$'
 REGEXP_LETTER='^[A-Za-z]+$'
+REGEXP_SESSION_NAME='^[A-Za-z0-9_\-]+$'
+REGEXP_SPACE='[ \n\t\r\f\v]+'
 
 error () { echo "$1" >&2; exit 2; }
 trim () { while read -r line; do echo "$line"; done; }
@@ -172,7 +174,7 @@ examples:
 tokens:
     (see "ser help o" tokes section)';;
         o) 
-echo 'usage: ser o <hostname|index> [command] [redirect result to file] 
+echo 'usage: ser o <host|index> [command] [redirect result to file] 
 
 login or executed command on the remote host
 
@@ -186,21 +188,21 @@ examples:
 tokens:
     {i} - config index
     {name} - config name';;
+        session-add|add)
+echo 'usage: ser session-add <session name> <host> local [bind_address:]<bind_port> [read_address>:]<read_port>
+       ser session-add <session name> <host> local [read_address:]<read_port> [bind_address>:]<bind_port>';;
         *) 
 echo 'usage: ser <command> 
 
 Type "ser help <command>" for help on a specific command.
 
 Available commands:
-    o|<hostname|index>        : open ssh client
+    o|<host|pattern|index>        : open ssh client
     name                      : list all config names  
     cp                        : copy file to hosts
 
-    forward-new|f             : create a new forward
-    forward-delete|del        : delete forward
-    forward-list|fl           : list all forward
-    forward-generate|gen      : generate sessions configs
-
+    session-add|add           : add forward to session
+    session-remove|remove     : 
     session-start|start       : start sessions
     session-stop|stop         : stop sessions
     session-list|sl           : list all sessions
@@ -270,7 +272,6 @@ read_session_enabled_status() {
 
 select_session() {
     session_alive_status=$(read_session_alived_status)
-    session_enabled_status=$(read_session_enabled_status)
 
     SESSION_INDEX=0
     SESSION=''
@@ -282,6 +283,18 @@ select_session() {
         name="${name%.*}"
         SESSION_SETS+=("$name")
     done
+}
+
+select_session_by_name() {
+    session_alive_status=$(read_session_alived_status)
+
+    SESSION_INDEX=0
+    SESSION=''
+    SESSION_SETS=()
+
+    if [[ -a "$host_forward_sessions/$1.forward" ]]; then
+        SESSION_SETS+=("$1")
+    fi
 }
 
 next_session () {
@@ -339,6 +352,8 @@ session_enabled() {
 
 session_connect() {
     local ssh_options=(
+        '-f'
+        '-N'
         '-o' 'ControlMaster=auto'
         '-o' "ControlPath=$host_forward_sessions/${SESSION}.sock"
         '-o' 'ExitOnForwardFailure=yes'
@@ -350,12 +365,12 @@ session_connect() {
 
     select_session_forward
 
-    local hostname
+    local target_host
 
     while next_forward
     do
         if [[ "$FORWARD_INDEX" -eq 1 ]]; then
-            hostname="${FORWARD[0]}"
+            target_host="${FORWARD[0]}"
         fi
 
         case "${FORWARD[1]}" in 
@@ -365,7 +380,84 @@ session_connect() {
         esac
     done
 
-    ssh -fN "$hostname" ${ssh_options[@]}
+    ssh "$target_host" ${ssh_options[@]}
+}
+
+read_forward_address() {
+    [[ "$1" =~ $REGEXP_SPACE ]] && error "illegal address, contains space: $1" 
+    local IFS=':'
+    local arr=($1)
+
+    if [[ ${#arr[@]} -eq 1 ]]; then
+        if [[ ! ${arr[0]} =~ $REGEXP_NUMBER ]]; then
+            error "illegal address, invalid port: ${arr[0]}"
+        fi
+        echo "127.0.0.1:$1"
+    elif [[ ${#arr[@]} -eq 2 ]]; then
+        if [[ ! ${arr[1]} =~ $REGEXP_NUMBER ]]; then
+            error "illegal address: $1"
+        fi
+        echo "$1"
+    else
+        error "illegal address: $1"
+    fi
+}
+
+session_add() {
+    [[ -z "$1" ]] && error "please enter a session name"
+    [[ -z "$2" ]] && error "please enter a host"
+    [[ -z "$3" ]] && error "please enter type name (local/remote)"
+    [[ -z "$4" || -z "$5" ]] && error "please enter local and remote forward address" 
+
+    if [[ ! "$1" =~ $REGEXP_SESSION_NAME ]]; then
+        error "illegal sesssion name: $1"
+    fi
+
+    select_hosts "$2"
+
+    local target_host
+
+    while next_host; 
+    do
+        target_host="$host"
+        break
+    done
+
+    if [[ -z "$target_host" ]]; then
+        error "host not found: $2"
+    fi
+
+    case "$3" in 
+        local) ;;
+        remote)  ;;
+        *) error "invalid type: $3" ;;
+    esac
+
+    local local_addr; local_addr="$(read_forward_address "$4")"
+    local remote_addr; local_addr="$(read_forward_address "$5")"
+
+    select_session_by_name "$1"
+
+    local forward_content="$target_host $3 $local_addr $remote_addr"
+
+    [[ -d "$host_forward_sessions" ]] && mkdir -p "$host_forward_sessions"
+
+    if next_session; then
+        select_session_forward
+
+        while next_forward; 
+        do
+             [[ "${FORWARD[0]}" != "$target_host" ]] && error "can't specify diffrent host in same session, exists host: ${FORWARD[0]}, try add: $target_host"
+        done
+
+        if echo "$forward_content" >> "$host_forward_sessions/$1.forward"; then
+            echo "add forward \"$forward_content\" to session \"$SESSION\" succeed"
+        fi
+    else
+        if echo "$forward_content" > "$host_forward_sessions/$1.forward"; then
+            echo "add forward \"$forward_content\" to new session \"$1\" succeed"
+        fi
+    fi
 }
 
 case $1 in
@@ -420,7 +512,11 @@ case $1 in
             fi
         done ;;
     o)
-        set -f; ssh_connect ${@:2} ;;  
+        set -f; ssh_connect "$2" "$3" "$4" ;;  
+    session-add|add)
+        IFS=''; session_add "$2" "$3" "$4" "$5" "$6";;
+    session-remove|remove)
+        ;;
     session-list|sl)
         select_session
 
@@ -447,8 +543,8 @@ case $1 in
                 fi
 
                 case "${FORWARD[1]}" in 
-                    local) echo " - ($SESSION_INDEX) LocalForward ${FORWARD[2]} <= ${FORWARD[3]}" ;;
-                    remote) echo " - ($SESSION_INDEX) RemoteForward ${FORWARD[2]} => ${FORWARD[3]}" ;;
+                    local) echo " - ($FORWARD_INDEX) LocalForward ${FORWARD[2]} <= ${FORWARD[3]}" ;;
+                    remote) echo " - ($FORWARD_INDEX) RemoteForward ${FORWARD[2]} => ${FORWARD[3]}" ;;
                     *) error "invalid line: '$LINE'" ;;
                 esac
             done
@@ -505,7 +601,7 @@ case $1 in
             fi
         done <<< "$(read_session_alived_status)"
         ;;
-    check|session-check-step)
+    session-check-step|check)
         select_session
 
         while next_session
@@ -530,6 +626,6 @@ case $1 in
 
         done ;;
     *)
-        set -f; ssh_connect $@ ;; 
+        set -f; IFS=''; ssh_connect "$1" "$2" "$3" ;; 
 esac
 
