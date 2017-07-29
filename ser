@@ -260,115 +260,6 @@ ssh_connect () {
     exit 0
 }
 
-select_forward() {
-    touch "$host_forward_options"
-    forward_index=0
-    forward=()
-    local IFS='
-'
-    forwards=($(cat "$host_forward_options"))
-}
-
-# $1 - forward type: 'local' or 'remote'
-# $2 - host
-# $3 - port
-# $4 - hostname (optional)
-select_forward_exists_port() {
-    touch "$host_forward_options"
-    forward_index=0
-    forward=()
-    forwards=()
-
-    local pattern
-
-    case "$1" in 
-        local) pattern="LocalForward $2" ;;
-        remote) pattern="RemoteForward \d+ $2" ;;
-        *) error 'invalid forward type' ;;
-    esac
-
-    local ret
-    ret="$(grep -E "$pattern" "$host_forward_options")"
-
-    if [[ -z "$3" ]]; then
-        local IFS='
-'
-        forwards=($ret)
-        return 0
-    fi
-
-    # avoid pattern contains hostname
-
-    local IFS='
-'
-    for l in $ret 
-    do
-        local IFS=' '; local info=($l)
-        if [[ "${info[0]}" == "$3" ]]; then
-            forwards+=("$l")
-        fi
-    done
-}
-
-next_forward () {
-    [[ -z "${forwards[forward_index]}" ]] && return 1
-    local IFS=' '; forward=(${forwards[forward_index]})
-    ((forward_index++))
-    return 0
-}
-
-# $1 - name of host
-# $2 - forward type: 'local' or 'remote'
-# $3 - local address:port
-# $4 - remote address:port
-# $5 - session name
-create_forward() {
-    case "$2" in 
-        local|remote) ;;
-        *) error 'invalid forward type' ;;
-    esac
-
-    echo "$1 $2 $3 $4 $5" >> "$host_forward_options"
-} 
-
-generate_forward_scripts() {
-    if [[ ! -d $host_forward_sessions ]]; then
-        mkdir -p "$host_forward_sessions"
-    fi
-
-    /bin/rm -f "$host_forward_sessions"/*.sh
-    /bin/rm -f "$host_forward_sessions"/*.session
-
-    select_forward
-
-    mainfile="$host_forward_sessions/main.sh"
-
-    while next_forward;
-    do
-        bashfile="$host_forward_sessions/${forward[0]}_${forward[4]}.sh"
-        sessionfile="$host_forward_sessions/${forward[0]}_${forward[4]}.session"
-
-        if [[ ! -a $bashfile ]]; then
-            echo -e "#/usr/bin/env bash\n[[ -a $host_forward_sessions/${forward[0]}_${forward[4]}.start ]] && ssh -fN '${forward[0]}' \c" > "$bashfile"
-            echo -e " -o 'ControlMaster=auto' -o 'ControlPath=$host_forward_sessions/${forward[0]}_${forward[4]}.sock' -o 'ExitOnForwardFailure=yes' \c" >> "$bashfile"
-            echo -e "-o 'ConnectTimeout=30' -o 'ServerAliveInterval=30' -o 'ServerAliveCountMax=3' -o 'BatchMode=yes' \c" >> "$bashfile"
-
-            echo ". '$bashfile'" >> "$mainfile"
-        fi
-
-        local forward_opt
-
-        case "${forward[1]}" in 
-            local) forward_opt='-L' ;;
-            remote) forward_opt='-R' ;;
-            *) error "invalid forward line: '${forward[*]}'" ;;
-        esac
-
-        echo -e "$forward_opt '${forward[2]}:${forward[3]}' \c" >> "$bashfile" 
-        echo "${forward[1]} ${forward[2]} ${forward[3]}" >> "$sessionfile" 
-    done
-}
-
 read_session_alived_status() {
     pgrep -fl ssh | grep -E '^[0-9]+ ssh .*'"$host_forward_sessions_dirname"
 }
@@ -379,42 +270,50 @@ read_session_enabled_status() {
 
 select_session() {
     session_alive_status=$(read_session_alived_status)
+    session_enabled_status=$(read_session_enabled_status)
 
-    session_index=0
-    session=()
-    sessions=()
+    SESSION_INDEX=0
+    SESSION=''
+    SESSION_SETS=()
 
-    local name
-
-    for file in $host_forward_sessions/*.session
+    for name in $host_forward_sessions/*.forward
     do
-        name=$(basename "$file")
+        name=$(basename "$name")
         name="${name%.*}"
-        sessions+=("$name")
+        SESSION_SETS+=("$name")
     done
 }
 
 next_session () {
-    [[ -z "${sessions[session_index]}" ]] && return 1
-    local IFS='_'; session=(${sessions[session_index]})
-    ((session_index++))
+    [[ -z "${SESSION_SETS[SESSION_INDEX]}" ]] && return 1
+    SESSION="${SESSION_SETS[SESSION_INDEX]}"
+    ((SESSION_INDEX++))
     return 0
 }
 
-session_info() {
-    cat "$host_forward_sessions/${session[0]}_${session[1]}.session"
+select_session_forward() {
+    FORWARD_INDEX=0
+    FORWARD=()
+    FORWARD_SETS=()
+
+    local IFS='
+'
+    FORWARD_SETS=($(cat "$host_forward_sessions/$SESSION.forward"))
 }
 
-# $1 - host name
-# $2 - session name
+next_forward () {
+    [[ -z "${FORWARD_SETS[FORWARD_INDEX]}" ]] && return 1
+    local IFS=' '; FORWARD=(${FORWARD_SETS[FORWARD_INDEX]})
+    ((FORWARD_INDEX++))
+    return 0
+}
 
-session_alive() {
+session_alived() {
     local count
 
-    count="$(grep "ControlPath=$host_forward_sessions/$1_$2.sock" <<< "$session_alive_status" | wc -l | trim)"
+    count="$(grep "ControlPath=$host_forward_sessions/$SESSION.sock" <<< "$session_alive_status" | wc -l | trim)"
 
     if [[ $count -eq 0 ]]; then
-        #SESSION_PID=''
         return 1
     fi
 
@@ -423,11 +322,50 @@ session_alive() {
         #arr=($(grep "ControlPath=$host_forward_sockets/$1_$2.sock" <<< "$session_alive_status"))
         #SESSION_PID=${arr[0]}
         # remove it 
-        session_alive_status=$(grep -v "ControlPath=$host_forward_sessions/$1_$2.sock" <<< "$session_alive_status")
+        session_alive_status=$(grep -v "ControlPath=$host_forward_sessions/$SESSION.sock" <<< "$session_alive_status")
         return 0
     fi
     
-    error "invalid process alive count"
+    error "invalid process alived count"
+}
+
+session_enabled() {
+    if [[ -a "$host_forward_sessions/$SESSION.enabled" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+session_connect() {
+    local ssh_options=(
+        '-o' 'ControlMaster=auto'
+        '-o' "ControlPath=$host_forward_sessions/${SESSION}.sock"
+        '-o' 'ExitOnForwardFailure=yes'
+        '-o' 'ConnectTimeout=30'
+        '-o' 'ServerAliveInterval=30'
+        '-o' 'ServerAliveCountMax=3'
+        '-o' 'BatchMode=yes'
+    )
+
+    select_session_forward
+
+    local hostname
+
+    while next_forward
+    do
+        if [[ "$FORWARD_INDEX" -eq 1 ]]; then
+            hostname="${FORWARD[0]}"
+        fi
+
+        case "${FORWARD[1]}" in 
+            local) ssh_options+=('-L' "${FORWARD[2]}:${FORWARD[3]}") ;;
+            remote) ssh_options+=('-R' "${FORWARD[2]}:${FORWARD[3]}") ;;
+            *) error "invalid forward type: '${FORWARD[*]}'" ;;
+        esac
+    done
+
+    ssh -fN "$hostname" ${ssh_options[@]}
 }
 
 case $1 in
@@ -482,192 +420,115 @@ case $1 in
             fi
         done ;;
     o)
-        set -f; ssh_connect ${@:2} ;; 
-    fl|forward-list)
-        select_forward
-
-        i=0
-        while next_forward;
-        do
-            ((i++))
-
-            forward_session="${forward[4]}"
-
-            if [[ 'default' == "$forward_session" ]]; then
-                forward_session=""
-            else
-                forward_session=":$forward_session"
-            fi
-
-            case "${forward[1]}" in 
-                local) echo -e "$i) ${COLOR_LIGHT_GRAY}${forward[0]}${NC}${forward_session} - <listen> ${forward[2]} <= ${forward[3]}" ;;
-                remote) echo -e "$i) ${COLOR_LIGHT_GRAY}${forward[0]}${NC}${forward_session} - ${forward[2]} => <listen> ${forward[3]}" ;;
-                *) error "invalid forward line: '${forward[*]}'" ;;
-            esac
-        done
-        ;;
-    f|forward) 
-        set -f;
-
-        [[ -z "$2" ]] && error "no hostname or index given"
-
-        select_hosts "$2"
-
-        ! next_host && error "no matching host"
-
-        echo "Create forward for \"${host[0]}\":" 
-        echo ""
-        echo "(l)ocal: <listen> localhost <= <read> ${host[2]}" 
-        echo "(r)emote: <read> localhost => <listen> ${host[2]}" 
-        echo ""
-
-        while true; 
-        do
-            read -r -p "Enter forward type: "  
-            case "$REPLY" in 
-                l) forward_type='local'; local_for='listen'; remote_for='read'; break ;;
-                r) forward_type='remote'; local_for='read'; remote_for='listen'; break ;;
-                *) echo 'Please enter "l" for local forward or "r" for remote forward' ;;
-            esac
-        done 
-
-        read -r -p "Enter local address for $local_for (optional): "  
-
-        if [[ -z $REPLY ]]; then
-            local_addr='127.0.0.1' 
-        else
-            local_addr=$(trim <<< "$REPLY")
-        fi
-
-        while true; 
-        do
-            read -r -p "Enter port of $local_addr for $local_for: "  
-
-            if [[ "$REPLY" =~ $REGEXP_NUMBER ]]; then 
-                local_port="$REPLY"
-                break
-            fi
-
-            echo 'Please enter valid port'
-        done
-
-        read -r -p "Enter remote address for $remote_for (optional): "  
-
-        if [[ -z $REPLY ]]; then
-            remote_addr='127.0.0.1' 
-        else
-            remote_addr=$(trim <<< "$REPLY")
-        fi
-
-        while true; 
-        do
-            read -r -p "Enter port of $remote_addr on host ${host[2]} for $remote_for: "  
-
-            if [[ $REPLY =~ $REGEXP_NUMBER ]]; then 
-                remote_port="$REPLY"
-                break
-            fi
-
-            echo 'Please enter valid port'
-        done
-
-        while true; 
-        do
-            read -r -p "Enter name of connect session (optional): "  
-
-            if [[ -z $REPLY ]]; then
-                session_name='default' 
-                break
-            fi
-
-            if [[ $REPLY =~ $REGEXP_LETTER ]]; then 
-                session_name="$REPLY"
-                break
-            fi
-
-            echo 'Please enter valid name, only use letters.'
-        done
-
-        if create_forward "${host[0]}" "$forward_type" "$local_addr:$local_port" "$remote_addr:$remote_port" "$session_name"; then
-            echo 'Forward add succeed (｡・`ω´･).'
-        else
-            error 'Failed to add.'
-        fi ;;
-    gen|forward-generate)
-        generate_forward_scripts 
-
-        filename="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-        crontab_task="0-59   *   *   *   *   bash '$filename' forward-check-step"
-        echo "$crontab_task" > "$host_forward_crontab_task" 
-        echo "Forward scripts generate finished."
-        echo "(Don't forget set task to crontab for check sessions alive : 'crontab $host_forward_crontab_task')"
-        ;;
-    step|session-check-step)
-        bash "$host_forward_sessions/main.sh" ;;
+        set -f; ssh_connect ${@:2} ;;  
     session-list|sl)
-        [[ ! -d "$host_forward_sessions" ]] && exit 0
+        select_session
+
+        while next_session
+        do
+            select_session_forward
+
+            if session_enabled; then
+                state="[${COLOR_GREEN}enabled${NC}]"
+            else
+                state="[${COLOR_RED}disabled${NC}]"
+            fi
+
+            if session_alived; then
+                state="$state [${COLOR_GREEN}connected${NC}]"
+            else
+                state="$state [${COLOR_RED}disconnect${NC}]"
+            fi
+
+            while next_forward
+            do
+                if [[ "$FORWARD_INDEX" -eq 1 ]]; then
+                    echo -e "$SESSION_INDEX) ${COLOR_LIGHT_GRAY}${SESSION}${NC} - [${FORWARD[0]}] ${state}"
+                fi
+
+                case "${FORWARD[1]}" in 
+                    local) echo " - ($SESSION_INDEX) LocalForward ${FORWARD[2]} <= ${FORWARD[3]}" ;;
+                    remote) echo " - ($SESSION_INDEX) RemoteForward ${FORWARD[2]} => ${FORWARD[3]}" ;;
+                    *) error "invalid line: '$LINE'" ;;
+                esac
+            done
+        done
+        ;;
+    session-start|start)
+        if [[ -z $2 ]]; then
+            session_name='*'
+        else
+            session_name=$2
+        fi
 
         select_session
 
         while next_session
         do
-            if session_alive "${session[0]}" "${session[1]}"; then
-                state=" [${COLOR_GREEN}connected${NC}]"
-            else
-                state=" [${COLOR_RED}disconnect${NC}]"
+            if [[ "${SESSION}" == ''$session_name ]]; then
+                echo "${SESSION}" > "${host_forward_sessions}/${SESSION}.enabled" 
+
+                echo -e "[${COLOR_GREEN}START SESSION${NC}] - $SESSION: \c"
+
+                if session_connect; then
+                    echo 'OK'
+                else
+                    echo "FAILED, EXIT CODE: $?"
+                fi
             fi
-
-            echo -e "$session_index) ${session[0]} - ${session[1]}${state}"
-
-            IFS='
-'
-            while read -r LINE
-            do
-                IFS=' '
-                info=($LINE)
-                case "${info[0]}" in 
-                    local) echo " - LocalForward ${info[1]} <= ${info[2]}" ;;
-                    remote) echo " - RemoteForward ${info[1]} => ${info[2]}" ;;
-                    *) error "invalid line: '$LINE'" ;;
-                esac
-            done <<< "$(session_info)"
-
-        done ;;
+        done
+        ;;
     session-stop|stop)
         if [[ -z $2 ]]; then
-            host_name='*'
-        else
-            host_name=$2
-        fi
-
-        if [[ -z $3 ]]; then
             session_name='*'
         else
-            session_name=$3
+            session_name=$2
         fi
 
         IFS='
 '
-        pid_list=()
         while read -r LINE
         do
-            if [[ "$LINE" == *"$host_forward_sessions/"${host_name}_${session_name}\.sock* ]]; then
+            if [[ "$LINE" == *"$host_forward_sessions/"${session_name}\.sock* ]]; then
                 IFS=' '
                 arr=($LINE)
                 pid="${arr[0]}"
-                pid_list+=("${arr[0]}")
                 name="$(grep -o "$host_forward_sessions_dirname"'/.*\.sock' <<< "$LINE")"
                 name=$(basename "$name")
                 name="${name%.*}"
-                IFS='_'
-                arr=($name)
 
-                echo "[pid:$pid] ${arr[0]} - ${arr[1]}"
+                /bin/rm -f "$host_forward_sessions/$name.enabled" # disable session
+
+                echo -e "[${COLOR_RED}STOP SESSION${NC}] - $name (pid:$pid)"
 
                 kill -s INT "$pid"
             fi
         done <<< "$(read_session_alived_status)"
         ;;
+    check|session-check-step)
+        select_session
+
+        while next_session
+        do
+            select_session_forward
+
+            if ! session_enabled; then
+                continue
+            fi
+
+            if session_alived; then
+                continue
+            fi
+           
+            echo -e "[${COLOR_GREEN}START SESSION${NC}] - $SESSION: \c"
+
+            if session_connect; then
+                echo 'OK'
+            else
+                echo "FAILED, EXIT CODE: $?"
+            fi
+
+        done ;;
     *)
         set -f; ssh_connect $@ ;; 
 esac
