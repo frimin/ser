@@ -5,14 +5,13 @@
 host_cache_path="$HOME/.ser"
 host_cache_file="$host_cache_path/cache"
 host_cache_date="$host_cache_path/cache_date"
-host_forward_options="$host_cache_path/forward_options"
 host_forward_sessions_dirname='forward_sessions'
 host_forward_sessions="$host_cache_path/$host_forward_sessions_dirname"
-host_forward_crontab_task="$HOME/.ser/forward_crontab_task"
+#host_forward_crontab_task="$HOME/.ser/forward_crontab_task"
 
 version='0.0.3a'
 
-config_files=("/etc/ssh/ssh_config")
+SSH_CONFIG_FILES=("/etc/ssh/ssh_config" "$HOME/.ssh/config")
 
 COLOR_LIGHT_GRAY='\033[0;37m'
 COLOR_GREEN='\033[0;32m'
@@ -29,8 +28,7 @@ trim () { while read -r line; do echo "$line"; done; }
 
 ## Config reader ## 
 
-read_config() {
-
+read_host_config_from_ssh_config() {
     check_host_name() {
         if [[ "$1" == "*" ]]; then return 0; fi
         if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
@@ -43,7 +41,7 @@ read_config() {
 
     local host; local content
 
-    for l in $(cat "${@}" | trim) 
+    for l in $(cat "${SSH_CONFIG_FILES[@]}" | trim) 
     do
         local IFS='#'; read -r -a l <<< "$l"; local IFS=" "; local options=()
 
@@ -127,7 +125,21 @@ token () {
     echo "$s"
 }
 
+read_host_config() {
+    [[ ! -d "$host_cache_path" ]] && mkdir "$host_cache_path"
+    [[ -a "$HOME/.ssh/config" ]] && CONFIG_FILES+=("$HOME/.ssh/config")
+
+    if need_flush "${CONFIG_FILES[@]}"; then
+        content=$(read_host_config_from_ssh_config)
+        echo "$content" > "$host_cache_file"
+    else
+        content=$(cat "$host_cache_file")
+    fi 
+}
+
 select_hosts () {
+    read_host_config
+
     local name="$1"
     [[ -z "$name" ]] && name='*' 
     set -f
@@ -215,7 +227,7 @@ echo "ver:${version},github:https://github.com/frimin/ser" ;;
     esac
 }
 
-show_list () {
+show_host_list () {
     local host=()
     local IFS='
 '
@@ -228,20 +240,6 @@ show_list () {
         ((i++)); echo -e "$i) ${COLOR_LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
     done
 }
-
-[[ ! -d "$host_cache_path" ]] && mkdir "$host_cache_path"
-[[ -a "$HOME/.ssh/config" ]] && config_files+=("$HOME/.ssh/config")
-
-if need_flush "${config_files[@]}"; then
-    content=$(read_config "${config_files[@]}")
-    echo "$content" > "$host_cache_file"
-else
-    content=$(cat "$host_cache_file")
-fi
-
-if [[ -z "$1" ]]; then 
-    show_list "$content"; exit
-fi
 
 ssh_connect () {
     select_hosts "$1"
@@ -277,7 +275,7 @@ select_session() {
     SESSION=''
     SESSION_SETS=()
 
-    for name in $host_forward_sessions/*.forward
+    for name in $host_forward_sessions/*.session
     do
         name=$(basename "$name")
         name="${name%.*}"
@@ -292,7 +290,7 @@ select_session_by_name() {
     SESSION=''
     SESSION_SETS=()
 
-    if [[ -a "$host_forward_sessions/$1.forward" ]]; then
+    if [[ -a "$host_forward_sessions/$1.session" ]]; then
         SESSION_SETS+=("$1")
     fi
 }
@@ -311,12 +309,13 @@ select_session_forward() {
 
     local IFS='
 '
-    FORWARD_SETS=($(cat "$host_forward_sessions/$SESSION.forward"))
+    FORWARD_SETS=($(cat "$host_forward_sessions/$SESSION.session"))
 }
 
 next_forward () {
     [[ -z "${FORWARD_SETS[FORWARD_INDEX]}" ]] && return 1
     local IFS=' '; FORWARD=(${FORWARD_SETS[FORWARD_INDEX]})
+    [[ ${#FORWARD[@]} -ne 4 ]] && error "invalid forward line: ${FORWARD_SETS[FORWARD_INDEX]}"
     ((FORWARD_INDEX++))
     return 0
 }
@@ -434,7 +433,7 @@ session_add() {
     esac
 
     local local_addr; local_addr="$(read_forward_address "$4")"
-    local remote_addr; local_addr="$(read_forward_address "$5")"
+    local remote_addr; remote_addr="$(read_forward_address "$5")"
 
     select_session_by_name "$1"
 
@@ -450,15 +449,20 @@ session_add() {
              [[ "${FORWARD[0]}" != "$target_host" ]] && error "can't specify diffrent host in same session, exists host: ${FORWARD[0]}, try add: $target_host"
         done
 
-        if echo "$forward_content" >> "$host_forward_sessions/$1.forward"; then
+        if echo "$forward_content" >> "$host_forward_sessions/$1.session"; then
             echo "add forward \"$forward_content\" to session \"$SESSION\" succeed"
         fi
     else
-        if echo "$forward_content" > "$host_forward_sessions/$1.forward"; then
+        if echo "$forward_content" > "$host_forward_sessions/$1.session"; then
             echo "add forward \"$forward_content\" to new session \"$1\" succeed"
         fi
     fi
 }
+
+if [[ -z "$1" ]]; then 
+    read_host_config
+    show_host_list "$content"; exit
+fi
 
 case $1 in
     help)
