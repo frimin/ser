@@ -19,7 +19,6 @@ COLOR_RED='\033[0;31m'
 NC='\033[0m'
 
 REGEXP_NUMBER='^[0-9]+$'
-REGEXP_LETTER='^[A-Za-z]+$'
 REGEXP_SESSION_NAME='^[A-Za-z0-9_\-]+$'
 REGEXP_SPACE='[ \n\t\r\f\v]+'
 
@@ -144,9 +143,9 @@ select_hosts () {
     [[ -z "$name" ]] && name='*' 
     set -f
 
-    local num_re='^[0-9]+$'
+    local name="${1:-*}"
 
-    if [[ "$name" =~ $num_re ]]; then 
+    if [[ "$name" =~ $REGEXP_NUMBER ]]; then 
         hosts+=("$(sed -n "${name}p" <<< "$content")")
         return
     fi
@@ -201,24 +200,26 @@ tokens:
     {i} - config index
     {name} - config name';;
         session-add|add)
-echo 'usage: ser session-add <session name> <host> local [bind_address:]<bind_port> [read_address>:]<read_port>
-       ser session-add <session name> <host> local [read_address:]<read_port> [bind_address>:]<bind_port>';;
+echo 'usage: ser session-add <session_name> <host> local [bind_address:]<bind_port> [read_address>:]<read_port>
+       ser session-add <session_name> <host> local [read_address:]<read_port> [bind_address>:]<bind_port>';;
+        session-remove|rm)
+echo 'usage: ser session-remove <session_name> <forward index>' ;;
         *) 
 echo 'usage: ser <command> 
 
 Type "ser help <command>" for help on a specific command.
 
 Available commands:
-    o|<host|pattern|index>        : open ssh client
+    o|<host|pattern|index>    : open ssh client
     name                      : list all config names  
     cp                        : copy file to hosts
 
     session-add|add           : add forward to session
-    session-remove|remove     : 
+    session-remove|rm         : remove forward from session 
     session-start|start       : start sessions
     session-stop|stop         : stop sessions
     session-list|sl           : list all sessions
-    session-check-step|step   : reconnect or add forward to sessions if enabled
+    session-check-step|step   : reconnect sessions if enabled
 
     help                      : show this message
 '
@@ -261,7 +262,7 @@ ssh_connect () {
 }
 
 read_session_alived_status() {
-    pgrep -fl ssh | grep -E '^[0-9]+ ssh .*'"$host_forward_sessions_dirname"
+    pgrep -U "$(id -u)" -fl ssh | grep -E '^[0-9]+ ssh .*'"$host_forward_sessions_dirname"
 }
 
 read_session_enabled_status() {
@@ -279,11 +280,14 @@ select_session() {
     do
         name=$(basename "$name")
         name="${name%.*}"
+        #[[ ! "$name" =~ $REGEXP_SESSION_NAME ]] && error "illegal sesssion name: $name"
         SESSION_SETS+=("$name")
     done
 }
 
 select_session_by_name() {
+    [[ ! "$1" =~ $REGEXP_SESSION_NAME ]] && error "illegal sesssion name: $1"
+
     session_alive_status=$(read_session_alived_status)
 
     SESSION_INDEX=0
@@ -295,6 +299,23 @@ select_session_by_name() {
     fi
 }
 
+select_session_alived() {
+    session_alive_status=$(read_session_alived_status)
+
+    SESSION_INDEX=0
+    SESSION=''
+    SESSION_SETS=()
+
+    while read -r LINE
+    do
+        if [[ -z "$LINE" ]]; then break; fi
+        local IFS='/'; local arr=($LINE)
+        local name="${arr[${#arr[@]}-1]}" # last one, it's socket filename 
+        name="${name%.*}"
+        SESSION_SETS+=("$name")
+    done <<< "$(grep -E -o "ControlPath=.*\.sock" <<< "$session_alive_status")"
+}
+
 next_session () {
     [[ -z "${SESSION_SETS[SESSION_INDEX]}" ]] && return 1
     SESSION="${SESSION_SETS[SESSION_INDEX]}"
@@ -302,7 +323,7 @@ next_session () {
     return 0
 }
 
-select_session_forward() {
+select_forward_from_session() {
     FORWARD_INDEX=0
     FORWARD=()
     FORWARD_SETS=()
@@ -330,15 +351,16 @@ session_alived() {
     fi
 
     if [[ $count -eq 1 ]]; then
-        #local IFS=' '
-        #arr=($(grep "ControlPath=$host_forward_sockets/$1_$2.sock" <<< "$session_alive_status"))
-        #SESSION_PID=${arr[0]}
-        # remove it 
-        session_alive_status=$(grep -v "ControlPath=$host_forward_sessions/$SESSION.sock" <<< "$session_alive_status")
         return 0
     fi
     
-    error "invalid process alived count"
+    error "invalid session process alived count"
+}
+
+session_pid() {
+    local IFS=' '
+    local arr=($(grep "ControlPath=$host_forward_sessions/$SESSION.sock" <<< "$session_alive_status"))
+    [[ "${arr[0]}" =~ $REGEXP_NUMBER ]] && echo "${arr[0]}"
 }
 
 session_enabled() {
@@ -362,7 +384,7 @@ session_connect() {
         '-o' 'BatchMode=yes'
     )
 
-    select_session_forward
+    select_forward_from_session
 
     local target_host
 
@@ -379,7 +401,16 @@ session_connect() {
         esac
     done
 
+    touch "${host_forward_sessions}/${SESSION}.enabled" 
+
     ssh "$target_host" ${ssh_options[@]}
+}
+
+session_disconnect() {
+    # disable session
+    [[ -a "$host_forward_sessions/$SESSION.enabled" ]] && /bin/rm -f "$host_forward_sessions/$SESSION.enabled" 
+    local pid; pid="$(session_pid)"
+    [[ "$pid" =~ $REGEXP_NUMBER ]] && kill -s INT "$pid"
 }
 
 read_forward_address() {
@@ -442,7 +473,7 @@ session_add() {
     [[ -d "$host_forward_sessions" ]] && mkdir -p "$host_forward_sessions"
 
     if next_session; then
-        select_session_forward
+        select_forward_from_session
 
         while next_forward; 
         do
@@ -455,6 +486,32 @@ session_add() {
     else
         if echo "$forward_content" > "$host_forward_sessions/$1.session"; then
             echo "add forward \"$forward_content\" to new session \"$1\" succeed"
+        fi
+    fi
+}
+
+session_remove() {
+    [[ -z "$1" ]] && error "please enter a session name"
+
+    select_session_by_name "$1"
+
+    if ! next_session; then
+        error "session \"$1\" not exists"
+    fi
+
+    if [[ -z "$2" || "$2" == "0" ]]; then
+        session_alived && echo "stopping session"
+        session_disconnect # will delete enable record file and try stop process
+        echo "remove session \"$SESSION\""
+        /bin/rm -f "$host_forward_sessions/$SESSION.session";
+    else
+        [[ ! "$2" =~ $REGEXP_NUMBER ]] && error "not a index: $2"
+        local session_content; session_content=$(cat "$host_forward_sessions/$SESSION.session")
+        if [[ "$(wc -l <<< "$session_content" | trim)" -ge "$2" ]]; then
+            echo "rewrite session \"$SESSION\" to delete rule #$2"
+            sed "$2d" <<< "$session_content" > "$host_forward_sessions/$SESSION.session";
+        else
+            error "session \"$SESSION\" not contain index $2"
         fi
     fi
 }
@@ -518,15 +575,15 @@ case $1 in
     o)
         set -f; ssh_connect "$2" "$3" "$4" ;;  
     session-add|add)
-        IFS=''; session_add "$2" "$3" "$4" "$5" "$6";;
-    session-remove|remove)
-        ;;
+        session_add "$2" "$3" "$4" "$5" "$6";;
+    session-remove|rm)
+        session_remove "$2" "$3";;
     session-list|sl)
         select_session
 
         while next_session
         do
-            select_session_forward
+            select_forward_from_session
 
             if session_enabled; then
                 state="[${COLOR_GREEN}enabled${NC}]"
@@ -537,7 +594,7 @@ case $1 in
             if session_alived; then
                 state="$state [${COLOR_GREEN}connected${NC}]"
             else
-                state="$state [${COLOR_RED}disconnect${NC}]"
+                state="$state [${COLOR_RED}disconnected${NC}]"
             fi
 
             while next_forward
@@ -547,26 +604,27 @@ case $1 in
                 fi
 
                 case "${FORWARD[1]}" in 
-                    local) echo " - ($FORWARD_INDEX) LocalForward ${FORWARD[2]} <= ${FORWARD[3]}" ;;
-                    remote) echo " - ($FORWARD_INDEX) RemoteForward ${FORWARD[2]} => ${FORWARD[3]}" ;;
+                    local) echo " - #$FORWARD_INDEX LocalForward ${FORWARD[2]} <= ${FORWARD[3]}" ;;
+                    remote) echo " - #$FORWARD_INDEX RemoteForward ${FORWARD[2]} => ${FORWARD[3]}" ;;
                     *) error "invalid line: '$LINE'" ;;
                 esac
             done
         done
         ;;
     session-start|start)
-        if [[ -z $2 ]]; then
-            session_name='*'
-        else
-            session_name=$2
-        fi
+        [[ -z "$2" ]] && session_name='*' || session_name="$2"
 
         select_session
+
+        set -f;
 
         while next_session
         do
             if [[ "${SESSION}" == ''$session_name ]]; then
-                echo "${SESSION}" > "${host_forward_sessions}/${SESSION}.enabled" 
+                if session_enabled && session_alived; then
+                    echo -e "[${COLOR_GREEN}START SESSION${NC}] - $SESSION (has been started, ignore it)"
+                    continue
+                fi
 
                 echo -e "[${COLOR_GREEN}START SESSION${NC}] - $SESSION: \c"
 
@@ -579,38 +637,35 @@ case $1 in
         done
         ;;
     session-stop|stop)
-        if [[ -z $2 ]]; then
-            session_name='*'
-        else
-            session_name=$2
-        fi
+        [[ -z "$2" ]] && session_name='*' || session_name="$2"
 
-        IFS='
-'
-        while read -r LINE
+        select_session
+
+        set -f;
+
+        while next_session
         do
-            if [[ "$LINE" == *"$host_forward_sessions/"${session_name}\.sock* ]]; then
-                IFS=' '
-                arr=($LINE)
-                pid="${arr[0]}"
-                name="$(grep -o "$host_forward_sessions_dirname"'/.*\.sock' <<< "$LINE")"
-                name=$(basename "$name")
-                name="${name%.*}"
-
-                /bin/rm -f "$host_forward_sessions/$name.enabled" # disable session
-
-                echo -e "[${COLOR_RED}STOP SESSION${NC}] - $name (pid:$pid)"
-
-                kill -s INT "$pid"
+            if session_enabled || session_alived; then
+                echo -e "[${COLOR_RED}STOP SESSION${NC}] - $SESSION"
+                session_disconnect
             fi
-        done <<< "$(read_session_alived_status)"
-        ;;
+        done
+
+        select_session_alived 
+
+        while next_session
+        do
+            if [[ "$SESSION" == ''$session_name ]]; then
+                echo -e "[${COLOR_RED}STOP UNMANAGED SESSION${NC}] - $SESSION "
+                session_disconnect
+            fi
+        done ;;
     session-check-step|check)
         select_session
 
         while next_session
         do
-            select_session_forward
+            select_forward_from_session
 
             if ! session_enabled; then
                 continue
