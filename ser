@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 
+SER_SSH_CONFIG="${SER_SSH_CONFIG:-/etc/ssh/ssh_config:$HOME/.ssh/config}"
+SER_OPTIONS_PATH="${SER_OPTIONS_PATH:-$HOME/.ser}"
+
+SER_LAST_VERSION_URL="${SER_LAST_VERSION_URL:-https://frimin.com/update/ser/last/version}"
+SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/ser}"
+
 ## General options ## 
 
-host_cache_path="$HOME/.ser"
-host_cache_file="$host_cache_path/cache"
-host_cache_date="$host_cache_path/cache_date"
-host_forward_sessions_dirname='forward_sessions'
-host_forward_sessions="$host_cache_path/$host_forward_sessions_dirname"
-#host_forward_crontab_task="$HOME/.ser/forward_crontab_task"
+SER_BASENAME="$(basename "$0")"
+SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
 
-version='0.0.3a'
+host_cache_file="$SER_OPTIONS_PATH/cache"
+host_cache_date="$SER_OPTIONS_PATH/cache_date"
+host_forward_tunnels_dirname='forward_tunnels'
+host_forward_tunnels="$SER_OPTIONS_PATH/$host_forward_tunnels_dirname"
 
-SSH_CONFIG_FILES=("/etc/ssh/ssh_config" "$HOME/.ssh/config")
+VERSION='0.0.3a2#1'
 
 COLOR_LIGHT_GRAY='\033[0;37m'
 COLOR_GREEN='\033[0;32m'
@@ -19,11 +24,61 @@ COLOR_RED='\033[0;31m'
 NC='\033[0m'
 
 REGEXP_NUMBER='^[0-9]+$'
-REGEXP_SESSION_NAME='^[A-Za-z0-9_\-]+$'
+REGEXP_TUNNEL_NAME='^[A-Za-z0-9_\-]+$'
 REGEXP_SPACE='[ \n\t\r\f\v]+'
 
 error () { echo "$1" >&2; exit 2; }
 trim () { while read -r line; do echo "$line"; done; }
+
+need_check_update() {
+    if [[ -a "$SER_OPTIONS_PATH/last_check_update" ]]; then
+        # check update per week
+        if [[ $(( $(date +%s) - $(cat "$SER_OPTIONS_PATH/last_check_update") )) -lt 604800 ]]; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+check_update() {
+    date +%s > "$SER_OPTIONS_PATH/last_check_update"
+
+    local IFS='#'
+    local last_ver 
+
+    if ! last_ver=($(curl -s -f "$SER_LAST_VERSION_URL")); then
+        local msg="failed to check update: $SER_LAST_VERSION_URL"
+        if [[ -n "$1" ]]; then
+            echo "$msg" >&2
+            return 1
+        else
+            error "$msg" 
+        fi
+    fi
+
+    local this_ver=($VERSION)
+
+    if [[ ${last_ver[1]} -gt ${this_ver[1]} ]]; then
+        echo "new version available, lastest: ${last_ver[*]}, current: $VERSION"
+        [[ -n "$1" ]] && echo "$1"
+        return 0
+    fi
+
+    return 1
+}
+
+init_ssh_config_file() {
+    SSH_CONFIG_FILES=()
+    local IFS=':'
+
+    for FILE in $SER_SSH_CONFIG
+    do
+        [[ -a $FILE ]] && SSH_CONFIG_FILES+=("$FILE")
+    done
+
+    [[ ${#SSH_CONFIG_FILES[@]} -eq 0 ]] && error "no available ssh config file: $SER_SSH_CONFIG"
+}
 
 ## Config reader ## 
 
@@ -33,6 +88,8 @@ read_host_config_from_ssh_config() {
         if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
         return 0
     }
+
+    [[ -z "${SSH_CONFIG_FILES[*]}" ]] && init_ssh_config_file
 
     local IFS='
 '
@@ -82,15 +139,17 @@ read_host_config_from_ssh_config() {
 }
 
 need_flush() {
+    [[ -z "${SSH_CONFIG_FILES[*]}" ]] && init_ssh_config_file
+
     local last; local cur
 
     [[ -a "$host_cache_date" ]] && last=$(cat "$host_cache_date") 
 
     case $(uname) in
         Linux) 
-            cur=$(sha1sum <<< "$version $(stat --printf="%Y" "$@")") ;;
+            cur=$(sha1sum <<< "$VERSION $(stat --printf="%Y" ${SSH_CONFIG_FILES[@]})") ;;
         Darwin) 
-            cur=$(shasum <<< "$version $(stat -f "%m" "$@")") ;;
+            cur=$(shasum <<< "$VERSION $(stat -f "%m" ${SSH_CONFIG_FILES[@]})") ;;
         *) 
             error "failed to read file modify time on $(uname)" ;;
     esac
@@ -125,7 +184,6 @@ token () {
 }
 
 read_host_config() {
-    [[ ! -d "$host_cache_path" ]] && mkdir "$host_cache_path"
     [[ -a "$HOME/.ssh/config" ]] && CONFIG_FILES+=("$HOME/.ssh/config")
 
     if need_flush "${CONFIG_FILES[@]}"; then
@@ -162,68 +220,84 @@ select_hosts () {
 help () {
     case $1 in
         name)
-echo 'usage: ser name [name] 
+echo "Usage: $SER_BASENAME name [name] 
 
 print config names
 
 examples:
-    ser name
-    ser name "*"
-    ser name "my*"
-' ;;
+    $SER_BASENAME name
+    $SER_BASENAME name \"*\"
+    $SER_BASENAME name \"my*\"
+" ;;
         cp) 
-echo 'usage: ser cp <from> <to> [pass to scp options] 
+echo "Usage: $SER_BASENAME cp <from> <to> [pass to scp options] 
 
 copy file to hosts 
 
 examples:
-    ser cp "file" "*:~/"
-    ser cp "*:~/file" "save/to/path/file-{name}"
-    ser cp "dir" "*:~/" -r
-    ser cp "*:~/dir" "save/to/path/{name}" -r
+    $SER_BASENAME cp \"file\" \"*:~/\"
+    $SER_BASENAME cp \"*:~/file\" \"save/to/path/file-{name}\"
+    $SER_BASENAME cp \"dir\" \"*:~/\" -r
+    $SER_BASENAME cp \"*:~/dir\" \"save/to/path/{name}\" -r
 
 tokens:
-    (see "ser help o" tokes section)';;
+    (see \"$SER_BASENAME help o\" tokes section)";;
         o) 
-echo 'usage: ser o <host|index> [command] [redirect result to file] 
+echo "Usage: $SER_BASENAME o <host|index> [command] [redirect result to file] 
 
 login or executed command on the remote host
 
 examples:
-    ser "host1"
-    ser o "host1"
-    ser "host1"
-    ser "*" "ls"
-    ser "*" "ls" "result-{name}"
+    $SER_BASENAME \"host1\"
+    $SER_BASENAME o \"host1\"
+    $SER_BASENAME \"host1\"
+    $SER_BASENAME \"*\" \"ls\"
+    $SER_BASENAME \"*\" \"ls\" \"result-{name}\"
 
 tokens:
     {i} - config index
-    {name} - config name';;
-        session-add|add)
-echo 'usage: ser session-add <session_name> <host> local [bind_address:]<bind_port> [read_address>:]<read_port>
-       ser session-add <session_name> <host> local [read_address:]<read_port> [bind_address>:]<bind_port>';;
-        session-remove|rm)
-echo 'usage: ser session-remove <session_name> <forward index>' ;;
-        *) 
-echo 'usage: ser <command> 
+    {name} - config name";;
+        tunnel-add|add)
+echo "Usage: $SER_BASENAME tunnel-add <tunnel_name> <host> local [bind_address:]<bind_port> [host:]<host_port>
+       $SER_BASENAME tunnel-add <tunnel_name> <host> remote [bind_address:]<bind_port> [host>:]<host_port>";;
+        tunnel-remove|rm)
+echo "Usage: $SER_BASENAME tunnel-remove <tunnel_name> <forward_index>" ;;
+        tunnel-start|start)
+echo "Usage: $SER_BASENAME tunnel-start [tunnel_name|pattern]" ;;
+        tunnel-restart|restart)
+echo "Usage: $SER_BASENAME tunnel-restart [tunnel_name|pattern]" ;;
+        tunnel-stop|stop)
+echo "Usage: $SER_BASENAME tunnel-stop [tunnel_name|pattern]" ;;
+        tunnel-list|tl)
+echo "Usage: $SER_BASENAME tunnel-list" ;;
+        tunnel-check-step|check)
+echo "Usage: $SER_BASENAME tunnel-check-step
 
-Type "ser help <command>" for help on a specific command.
+Remember add task to crontab:
+
+\"crontab <<< '0-59 * * * * bash '$SER_PATH' tunnel-check-step\" " ;;
+        *) 
+echo "Usage: $SER_BASENAME <command> 
+
+Type \"$SER_BASENAME help <command>\" for help on a specific command.
 
 Available commands:
-    o|<host|pattern|index>    : open ssh client
-    name                      : list all config names  
-    cp                        : copy file to hosts
+    o|<host|pattern|index>    : Login to host
+    name                      : List all config names  
+    cp                        : Copy file to hosts
 
-    session-add|add           : add forward to session
-    session-remove|rm         : remove forward from session 
-    session-start|start       : start sessions
-    session-stop|stop         : stop sessions
-    session-list|sl           : list all sessions
-    session-check-step|step   : reconnect sessions if enabled
+    tunnel-add|add            : Add forward to tunnel
+    tunnel-remove|rm          : Remove forward from tunnel 
+    tunnel-start|start        : Start and enable tunnels
+    tunnel-restart|restart    : Restart tunnels if enabled
+    tunnel-stop|stop          : Stop and disable tunnels
+    tunnel-list|tl            : List all tunnels
+    tunnel-check-step|check   : Reconnect tunnels if enabled
 
-    help                      : show this message
-'
-echo "ver:${version},github:https://github.com/frimin/ser" ;;
+    update                    : Update this program to latest version, Make sure that you have sufficient permissions
+    help                      : Show this message
+"
+echo "ver:${VERSION},github:https://github.com/frimin/ser" ;;
 
     esac
 }
@@ -261,50 +335,50 @@ ssh_connect () {
     exit 0
 }
 
-read_session_alived_status() {
-    pgrep -U "$(id -u)" -fl ssh | grep -E '^[0-9]+ ssh .*'"$host_forward_sessions_dirname"
+read_tunnel_alived_status() {
+    pgrep -U "$(id -u)" -fl ssh | grep -E '^[0-9]+ ssh .*'"$host_forward_tunnels_dirname"
 }
 
-read_session_enabled_status() {
-    cat "$host_forward_sessions/"*.enabled 2>/dev/null
+read_tunnel_enabled_status() {
+    cat "$host_forward_tunnels/"*.enabled 2>/dev/null
 }
 
-select_session() {
-    session_alive_status=$(read_session_alived_status)
+select_tunnel() {
+    tunnel_alive_status=$(read_tunnel_alived_status)
 
-    SESSION_INDEX=0
-    SESSION=''
-    SESSION_SETS=()
+    TUNNEL_INDEX=0
+    TUNNEL=''
+    TUNNEL_SETS=()
 
-    for name in $host_forward_sessions/*.session
+    for name in $host_forward_tunnels/*.tunnel
     do
         name=$(basename "$name")
         name="${name%.*}"
-        #[[ ! "$name" =~ $REGEXP_SESSION_NAME ]] && error "illegal sesssion name: $name"
-        SESSION_SETS+=("$name")
+        #[[ ! "$name" =~ $REGEXP_TUNNEL_NAME ]] && error "illegal sesssion name: $name"
+        TUNNEL_SETS+=("$name")
     done
 }
 
-select_session_by_name() {
-    [[ ! "$1" =~ $REGEXP_SESSION_NAME ]] && error "illegal sesssion name: $1"
+select_tunnel_by_name() {
+    [[ ! "$1" =~ $REGEXP_TUNNEL_NAME ]] && error "illegal sesssion name: $1"
 
-    session_alive_status=$(read_session_alived_status)
+    tunnel_alive_status=$(read_tunnel_alived_status)
 
-    SESSION_INDEX=0
-    SESSION=''
-    SESSION_SETS=()
+    TUNNEL_INDEX=0
+    TUNNEL=''
+    TUNNEL_SETS=()
 
-    if [[ -a "$host_forward_sessions/$1.session" ]]; then
-        SESSION_SETS+=("$1")
+    if [[ -a "$host_forward_tunnels/$1.tunnel" ]]; then
+        TUNNEL_SETS+=("$1")
     fi
 }
 
-select_session_alived() {
-    session_alive_status=$(read_session_alived_status)
+select_tunnel_alived() {
+    tunnel_alive_status=$(read_tunnel_alived_status)
 
-    SESSION_INDEX=0
-    SESSION=''
-    SESSION_SETS=()
+    TUNNEL_INDEX=0
+    TUNNEL=''
+    TUNNEL_SETS=()
 
     while read -r LINE
     do
@@ -312,25 +386,25 @@ select_session_alived() {
         local IFS='/'; local arr=($LINE)
         local name="${arr[${#arr[@]}-1]}" # last one, it's socket filename 
         name="${name%.*}"
-        SESSION_SETS+=("$name")
-    done <<< "$(grep -E -o "ControlPath=.*\.sock" <<< "$session_alive_status")"
+        TUNNEL_SETS+=("$name")
+    done <<< "$(grep -E -o "ControlPath=.*\.sock" <<< "$tunnel_alive_status")"
 }
 
-next_session () {
-    [[ -z "${SESSION_SETS[SESSION_INDEX]}" ]] && return 1
-    SESSION="${SESSION_SETS[SESSION_INDEX]}"
-    ((SESSION_INDEX++))
+next_tunnel () {
+    [[ -z "${TUNNEL_SETS[TUNNEL_INDEX]}" ]] && return 1
+    TUNNEL="${TUNNEL_SETS[TUNNEL_INDEX]}"
+    ((TUNNEL_INDEX++))
     return 0
 }
 
-select_forward_from_session() {
+select_forward_from_tunnel() {
     FORWARD_INDEX=0
     FORWARD=()
     FORWARD_SETS=()
 
     local IFS='
 '
-    FORWARD_SETS=($(cat "$host_forward_sessions/$SESSION.session"))
+    FORWARD_SETS=($(cat "$host_forward_tunnels/$TUNNEL.tunnel"))
 }
 
 next_forward () {
@@ -341,10 +415,10 @@ next_forward () {
     return 0
 }
 
-session_alived() {
+tunnel_alived() {
     local count
 
-    count="$(grep "ControlPath=$host_forward_sessions/$SESSION.sock" <<< "$session_alive_status" | wc -l | trim)"
+    count="$(grep -c "ControlPath=$host_forward_tunnels/$TUNNEL.sock" <<< "$tunnel_alive_status")"
 
     if [[ $count -eq 0 ]]; then
         return 1
@@ -354,29 +428,29 @@ session_alived() {
         return 0
     fi
     
-    error "invalid session process alived count"
+    error "invalid tunnel process alived count"
 }
 
-session_pid() {
+tunnel_pid() {
     local IFS=' '
-    local arr=($(grep "ControlPath=$host_forward_sessions/$SESSION.sock" <<< "$session_alive_status"))
+    local arr=($(grep "ControlPath=$host_forward_tunnels/$TUNNEL.sock" <<< "$tunnel_alive_status"))
     [[ "${arr[0]}" =~ $REGEXP_NUMBER ]] && echo "${arr[0]}"
 }
 
-session_enabled() {
-    if [[ -a "$host_forward_sessions/$SESSION.enabled" ]]; then
+tunnel_enabled() {
+    if [[ -a "$host_forward_tunnels/$TUNNEL.enabled" ]]; then
         return 0
     else
         return 1
     fi
 }
 
-session_connect() {
+tunnel_connect() {
     local ssh_options=(
         '-f'
         '-N'
         '-o' 'ControlMaster=auto'
-        '-o' "ControlPath=$host_forward_sessions/${SESSION}.sock"
+        '-o' "ControlPath=$host_forward_tunnels/${TUNNEL}.sock"
         '-o' 'ExitOnForwardFailure=yes'
         '-o' 'ConnectTimeout=30'
         '-o' 'ServerAliveInterval=30'
@@ -384,7 +458,7 @@ session_connect() {
         '-o' 'BatchMode=yes'
     )
 
-    select_forward_from_session
+    select_forward_from_tunnel
 
     local target_host
 
@@ -401,15 +475,15 @@ session_connect() {
         esac
     done
 
-    touch "${host_forward_sessions}/${SESSION}.enabled" 
+    touch "${host_forward_tunnels}/${TUNNEL}.enabled" 
 
     ssh "$target_host" ${ssh_options[@]}
 }
 
-session_disconnect() {
-    # disable session
-    [[ -a "$host_forward_sessions/$SESSION.enabled" ]] && /bin/rm -f "$host_forward_sessions/$SESSION.enabled" 
-    local pid; pid="$(session_pid)"
+tunnel_disconnect() {
+    # disable tunnel
+    [[ -a "$host_forward_tunnels/$TUNNEL.enabled" ]] && /bin/rm -f "$host_forward_tunnels/$TUNNEL.enabled" 
+    local pid; pid="$(tunnel_pid)"
     [[ "$pid" =~ $REGEXP_NUMBER ]] && kill -s INT "$pid"
 }
 
@@ -433,13 +507,13 @@ read_forward_address() {
     fi
 }
 
-session_add() {
-    [[ -z "$1" ]] && error "please enter a session name"
+tunnel_add() {
+    [[ -z "$1" ]] && error "please enter a tunnel name"
     [[ -z "$2" ]] && error "please enter a host"
     [[ -z "$3" ]] && error "please enter type name (local/remote)"
     [[ -z "$4" || -z "$5" ]] && error "please enter local and remote forward address" 
 
-    if [[ ! "$1" =~ $REGEXP_SESSION_NAME ]]; then
+    if [[ ! "$1" =~ $REGEXP_TUNNEL_NAME ]]; then
         error "illegal sesssion name: $1"
     fi
 
@@ -458,67 +532,70 @@ session_add() {
     fi
 
     case "$3" in 
-        local) ;;
-        remote)  ;;
+        local|remote) ;;
         *) error "invalid type: $3" ;;
     esac
 
-    local local_addr; local_addr="$(read_forward_address "$4")"
-    local remote_addr; remote_addr="$(read_forward_address "$5")"
+    local bind_addr; bind_addr="$(read_forward_address "$4")"
+    local read_addr; read_addr="$(read_forward_address "$5")"
 
-    select_session_by_name "$1"
+    select_tunnel_by_name "$1"
 
-    local forward_content="$target_host $3 $local_addr $remote_addr"
+    local forward_content="$target_host $3 $bind_addr $read_addr"
 
-    [[ -d "$host_forward_sessions" ]] && mkdir -p "$host_forward_sessions"
+    [[ ! -d "$host_forward_tunnels" ]] && mkdir -p "$host_forward_tunnels"
 
-    if next_session; then
-        select_forward_from_session
+    if next_tunnel; then
+        select_forward_from_tunnel
 
         while next_forward; 
         do
-             [[ "${FORWARD[0]}" != "$target_host" ]] && error "can't specify diffrent host in same session, exists host: ${FORWARD[0]}, try add: $target_host"
+             [[ "${FORWARD[0]}" != "$target_host" ]] && error "can't specify diffrent host in same tunnel, exists host: ${FORWARD[0]}, try add: $target_host"
         done
 
-        if echo "$forward_content" >> "$host_forward_sessions/$1.session"; then
-            echo "add forward \"$forward_content\" to session \"$SESSION\" succeed"
+        if echo "$forward_content" >> "$host_forward_tunnels/$1.tunnel"; then
+            echo "add forward \"$forward_content\" to tunnel \"$TUNNEL\" succeed"
         fi
     else
-        if echo "$forward_content" > "$host_forward_sessions/$1.session"; then
-            echo "add forward \"$forward_content\" to new session \"$1\" succeed"
+        if echo "$forward_content" > "$host_forward_tunnels/$1.tunnel"; then
+            echo "add forward \"$forward_content\" to new tunnel \"$1\" succeed"
         fi
     fi
 }
 
-session_remove() {
-    [[ -z "$1" ]] && error "please enter a session name"
+tunnel_remove() {
+    [[ -z "$1" ]] && error "please enter a tunnel name"
 
-    select_session_by_name "$1"
+    select_tunnel_by_name "$1"
 
-    if ! next_session; then
-        error "session \"$1\" not exists"
+    if ! next_tunnel; then
+        error "tunnel \"$1\" not exists"
     fi
 
     if [[ -z "$2" || "$2" == "0" ]]; then
-        session_alived && echo "stopping session"
-        session_disconnect # will delete enable record file and try stop process
-        echo "remove session \"$SESSION\""
-        /bin/rm -f "$host_forward_sessions/$SESSION.session";
+        tunnel_alived && echo "stopping tunnel"
+        tunnel_disconnect # will delete enable record file and try stop process
+        echo "remove tunnel \"$TUNNEL\""
+        /bin/rm -f "$host_forward_tunnels/$TUNNEL.tunnel";
     else
         [[ ! "$2" =~ $REGEXP_NUMBER ]] && error "not a index: $2"
-        local session_content; session_content=$(cat "$host_forward_sessions/$SESSION.session")
-        if [[ "$(wc -l <<< "$session_content" | trim)" -ge "$2" ]]; then
-            echo "rewrite session \"$SESSION\" to delete rule #$2"
-            sed "$2d" <<< "$session_content" > "$host_forward_sessions/$SESSION.session";
+        local tunnel_content; tunnel_content=$(cat "$host_forward_tunnels/$TUNNEL.tunnel")
+        if [[ "$(wc -l <<< "$tunnel_content" | trim)" -ge "$2" ]]; then
+            echo "rewrite tunnel \"$TUNNEL\" to delete rule #$2"
+            sed "$2d" <<< "$tunnel_content" > "$host_forward_tunnels/$TUNNEL.tunnel";
         else
-            error "session \"$SESSION\" not contain index $2"
+            error "tunnel \"$TUNNEL\" not contain index $2"
         fi
     fi
 }
 
+[[ ! -d "$SER_OPTIONS_PATH" ]] && mkdir "$SER_OPTIONS_PATH"
+
 if [[ -z "$1" ]]; then 
     read_host_config
-    show_host_list "$content"; exit
+    show_host_list "$content"; 
+    need_check_update && check_update "use: \"ser update\" update to lastest version"
+    exit
 fi
 
 case $1 in
@@ -574,24 +651,24 @@ case $1 in
         done ;;
     o)
         set -f; ssh_connect "$2" "$3" "$4" ;;  
-    session-add|add)
-        session_add "$2" "$3" "$4" "$5" "$6";;
-    session-remove|rm)
-        session_remove "$2" "$3";;
-    session-list|sl)
-        select_session
+    tunnel-add|add)
+        tunnel_add "$2" "$3" "$4" "$5" "$6";;
+    tunnel-remove|rm)
+        tunnel_remove "$2" "$3";;
+    tunnel-list|tl)
+        select_tunnel
 
-        while next_session
+        while next_tunnel
         do
-            select_forward_from_session
+            select_forward_from_tunnel
 
-            if session_enabled; then
+            if tunnel_enabled; then
                 state="[${COLOR_GREEN}enabled${NC}]"
             else
                 state="[${COLOR_RED}disabled${NC}]"
             fi
 
-            if session_alived; then
+            if tunnel_alived; then
                 state="$state [${COLOR_GREEN}connected${NC}]"
             else
                 state="$state [${COLOR_RED}disconnected${NC}]"
@@ -600,35 +677,35 @@ case $1 in
             while next_forward
             do
                 if [[ "$FORWARD_INDEX" -eq 1 ]]; then
-                    echo -e "$SESSION_INDEX) ${COLOR_LIGHT_GRAY}${SESSION}${NC} - [${FORWARD[0]}] ${state}"
+                    echo -e "$TUNNEL_INDEX) ${COLOR_LIGHT_GRAY}${TUNNEL}${NC} - [${FORWARD[0]}] ${state}"
                 fi
 
                 case "${FORWARD[1]}" in 
-                    local) echo " - #$FORWARD_INDEX LocalForward ${FORWARD[2]} <= ${FORWARD[3]}" ;;
-                    remote) echo " - #$FORWARD_INDEX RemoteForward ${FORWARD[2]} => ${FORWARD[3]}" ;;
+                    local) echo " - #$FORWARD_INDEX Forward (local) ${FORWARD[2]} <= (remote) ${FORWARD[3]}" ;;
+                    remote) echo " - #$FORWARD_INDEX Forward (local) ${FORWARD[3]} => (remote) ${FORWARD[2]}" ;;
                     *) error "invalid line: '$LINE'" ;;
                 esac
             done
         done
         ;;
-    session-start|start)
-        [[ -z "$2" ]] && session_name='*' || session_name="$2"
+    tunnel-start|start)
+        [[ -z "$2" ]] && tunnel_name='*' || tunnel_name="$2"
 
-        select_session
+        select_tunnel
 
         set -f;
 
-        while next_session
+        while next_tunnel
         do
-            if [[ "${SESSION}" == ''$session_name ]]; then
-                if session_enabled && session_alived; then
-                    echo -e "[${COLOR_GREEN}START SESSION${NC}] - $SESSION (has been started, ignore it)"
+            if [[ "${TUNNEL}" == ''$tunnel_name ]]; then
+                if tunnel_enabled && tunnel_alived; then
+                    echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL (has been started, ignore it)"
                     continue
                 fi
 
-                echo -e "[${COLOR_GREEN}START SESSION${NC}] - $SESSION: \c"
+                echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL: \c"
 
-                if session_connect; then
+                if tunnel_connect; then
                     echo 'OK'
                 else
                     echo "FAILED, EXIT CODE: $?"
@@ -636,54 +713,99 @@ case $1 in
             fi
         done
         ;;
-    session-stop|stop)
-        [[ -z "$2" ]] && session_name='*' || session_name="$2"
+    tunnel-stop|stop)
+        [[ -z "$2" ]] && tunnel_name='*' || tunnel_name="$2"
 
-        select_session
+        select_tunnel
 
         set -f;
 
-        while next_session
+        while next_tunnel
         do
-            if session_enabled || session_alived; then
-                echo -e "[${COLOR_RED}STOP SESSION${NC}] - $SESSION"
-                session_disconnect
+            if [[ "${TUNNEL}" != ''$tunnel_name ]]; then
+                continue
+            fi
+
+            if tunnel_enabled || tunnel_alived; then
+                echo -e "[${COLOR_RED}STOP TUNNEL${NC}] - $TUNNEL"
+                tunnel_disconnect
             fi
         done
 
-        select_session_alived 
+        select_tunnel_alived 
 
-        while next_session
+        while next_tunnel
         do
-            if [[ "$SESSION" == ''$session_name ]]; then
-                echo -e "[${COLOR_RED}STOP UNMANAGED SESSION${NC}] - $SESSION "
-                session_disconnect
-            fi
-        done ;;
-    session-check-step|check)
-        select_session
-
-        while next_session
-        do
-            select_forward_from_session
-
-            if ! session_enabled; then
+            if [[ "${TUNNEL}" != ''$tunnel_name ]]; then
                 continue
             fi
 
-            if session_alived; then
+            if [[ "$TUNNEL" == ''$tunnel_name ]]; then
+                echo -e "[${COLOR_RED}STOP UNMANAGED TUNNEL${NC}] - $TUNNEL "
+                tunnel_disconnect
+            fi
+        done ;;
+    tunnel-restart|restart)
+        [[ -z "$2" ]] && tunnel_name='*' || tunnel_name="$2"
+
+        select_tunnel
+
+        set -f;
+
+        while next_tunnel
+        do
+            if [[ "${TUNNEL}" != ''$tunnel_name ]]; then
+                continue
+            fi
+
+            if tunnel_enabled; then
+                echo -e "[${COLOR_GREEN}RESTART TUNNEL${NC}] - $TUNNEL\n"
+                tunnel_disconnect
+
+                if tunnel_connect; then
+                    echo 'OK'
+                else
+                    echo "FAILED, EXIT CODE: $?"
+                fi
+            fi
+        done ;;
+    tunnel-check-step|check)
+        select_tunnel
+
+        while next_tunnel
+        do
+            select_forward_from_tunnel
+
+            if ! tunnel_enabled; then
+                continue
+            fi
+
+            if tunnel_alived; then
                 continue
             fi
            
-            echo -e "[${COLOR_GREEN}START SESSION${NC}] - $SESSION: \c"
+            echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL: \c"
 
-            if session_connect; then
+            if tunnel_connect; then
                 echo 'OK'
             else
                 echo "FAILED, EXIT CODE: $?"
             fi
 
         done ;;
+    update)
+        echo "check update"
+        if check_update ''; then
+            echo "downloading"
+            if new_content="$(curl -s -f "$SER_LAST_SCRIPT_URL")"; then
+                echo "updating: $SER_PATH"
+                echo "$new_content" > "$SER_PATH"
+            else
+                error "failed to download: $SER_LAST_SCRIPT_URL"
+            fi
+        else
+            echo 'no update is available'
+        fi ;;
     *)
         set -f; IFS=''; ssh_connect "$1" "$2" "$3" ;; 
 esac
