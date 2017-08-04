@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+## Environment options
+
 SER_SSH_CONFIG="${SER_SSH_CONFIG:-/etc/ssh/ssh_config:$HOME/.ssh/config}"
 SER_OPTIONS_PATH="${SER_OPTIONS_PATH:-$HOME/.ser}"
 
@@ -8,15 +10,14 @@ SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/s
 
 ## General options ## 
 
+VERSION='0.0.3a2#1'
+
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
-
-host_cache_file="$SER_OPTIONS_PATH/cache"
-host_cache_date="$SER_OPTIONS_PATH/cache_date"
-host_forward_tunnels_dirname='forward_tunnels'
-host_forward_tunnels="$SER_OPTIONS_PATH/$host_forward_tunnels_dirname"
-
-VERSION='0.0.3a2#1'
+SER_HOSTS_CACHE="$SER_OPTIONS_PATH/cache"
+SER_HOSTS_LAST_MODIFY="$SER_OPTIONS_PATH/cache_date"
+SER_TUNNELS_DIRNAME='tunnels'
+SER_TUNNELS_PATH="$SER_OPTIONS_PATH/$SER_TUNNELS_DIRNAME"
 
 COLOR_LIGHT_GRAY='\033[0;37m'
 COLOR_GREEN='\033[0;32m'
@@ -29,193 +30,6 @@ REGEXP_SPACE='[ \n\t\r\f\v]+'
 
 error () { echo "$1" >&2; exit 2; }
 trim () { while read -r line; do echo "$line"; done; }
-
-need_check_update() {
-    if [[ -a "$SER_OPTIONS_PATH/last_check_update" ]]; then
-        # check update per week
-        if [[ $(( $(date +%s) - $(cat "$SER_OPTIONS_PATH/last_check_update") )) -lt 604800 ]]; then
-            return 1
-        fi
-    fi
-
-    return 0
-}
-
-check_update() {
-    date +%s > "$SER_OPTIONS_PATH/last_check_update"
-
-    local IFS='#'
-    local last_ver 
-
-    if ! last_ver=($(curl -s -f "$SER_LAST_VERSION_URL")); then
-        local msg="failed to check update: $SER_LAST_VERSION_URL"
-        if [[ -n "$1" ]]; then
-            echo "$msg" >&2
-            return 1
-        else
-            error "$msg" 
-        fi
-    fi
-
-    local this_ver=($VERSION)
-
-    if [[ ${last_ver[1]} -gt ${this_ver[1]} ]]; then
-        echo "new version available, lastest: ${last_ver[*]}, current: $VERSION"
-        [[ -n "$1" ]] && echo "$1"
-        return 0
-    fi
-
-    return 1
-}
-
-init_ssh_config_file() {
-    SSH_CONFIG_FILES=()
-    local IFS=':'
-
-    for FILE in $SER_SSH_CONFIG
-    do
-        [[ -a $FILE ]] && SSH_CONFIG_FILES+=("$FILE")
-    done
-
-    [[ ${#SSH_CONFIG_FILES[@]} -eq 0 ]] && error "no available ssh config file: $SER_SSH_CONFIG"
-}
-
-## Config reader ## 
-
-read_host_config_from_ssh_config() {
-    check_host_name() {
-        if [[ "$1" == "*" ]]; then return 0; fi
-        if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
-        return 0
-    }
-
-    [[ -z "${SSH_CONFIG_FILES[*]}" ]] && init_ssh_config_file
-
-    local IFS='
-'
-    set -f
-
-    local host; local content
-
-    for l in $(cat "${SSH_CONFIG_FILES[@]}" | trim) 
-    do
-        local IFS='#'; read -r -a l <<< "$l"; local IFS=" "; local options=()
-
-        for p in ${l[0]}; do options+=($p); done
-
-        case ${options[0]} in
-            Host)
-                if [[ -n "${host[*]}" ]]; then
-                    [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
-                    content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
-                fi
-
-                check_host_name "${options[1]}" || error "sorry, patterns not support: ${options[1]}"
-
-                if [[ ${options[1]} == "*" ]]; then
-                    host=(); continue
-                fi
-
-                host=(${options[1]} $USER "" "") ;;
-            User) 
-                [[ -n "${host[*]}" ]] && host[1]=${options[1]} ;;
-            HostName) 
-                [[ -n "${host[*]}" ]] && host[2]=${options[1]} ;;
-            Port) 
-                [[ -n "${host[*]}" ]] && host[3]=${options[1]} ;;
-            Match)
-                error "sorry, 'Match' option not support" ;;
-            *) ;;
-        esac
-    done
- 
-    # handle last one
-    if [[ -n "${host[*]}" ]]; then
-        [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
-        content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
-    fi
-
-    echo -e "$content"
-}
-
-need_flush() {
-    [[ -z "${SSH_CONFIG_FILES[*]}" ]] && init_ssh_config_file
-
-    local last; local cur
-
-    [[ -a "$host_cache_date" ]] && last=$(cat "$host_cache_date") 
-
-    case $(uname) in
-        Linux) 
-            cur=$(sha1sum <<< "$VERSION $(stat --printf="%Y" ${SSH_CONFIG_FILES[@]})") ;;
-        Darwin) 
-            cur=$(shasum <<< "$VERSION $(stat -f "%m" ${SSH_CONFIG_FILES[@]})") ;;
-        *) 
-            error "failed to read file modify time on $(uname)" ;;
-    esac
-
-    if [[ "$last" == "$cur" ]]; then
-        return 1
-    else
-        echo "$cur" > "$host_cache_date"
-        return 0
-    fi
-}
-
-host_index=0
-host=()
-hosts=()
-
-match_host () { 
-    eval "[[ $1 == $2 ]]" 2>/dev/null # ignore syntax error
-}
-
-next_host () {
-    [[ -z "${hosts[host_index]}" ]] && return 1
-    local IFS=' '; host=(${hosts[host_index]})
-    ((host_index++))
-    return 0
-}
-
-token () {
-    local s=${1//'{name}'/${host[0]}}
-    s=${s//'{i}'/${host_index}}
-    echo "$s"
-}
-
-read_host_config() {
-    [[ -a "$HOME/.ssh/config" ]] && CONFIG_FILES+=("$HOME/.ssh/config")
-
-    if need_flush "${CONFIG_FILES[@]}"; then
-        content=$(read_host_config_from_ssh_config)
-        echo "$content" > "$host_cache_file"
-    else
-        content=$(cat "$host_cache_file")
-    fi 
-}
-
-select_hosts () {
-    read_host_config
-
-    local name="$1"
-    [[ -z "$name" ]] && name='*' 
-    set -f
-
-    local name="${1:-*}"
-
-    if [[ "$name" =~ $REGEXP_NUMBER ]]; then 
-        hosts+=("$(sed -n "${name}p" <<< "$content")")
-        return
-    fi
-
-    local IFS='
-'
-    for l in $content 
-    do
-        local IFS=' '; local host=($l)
-        match_host "${host[0]}" "${name}" && hosts+=("$l")
-    done
-}
 
 help () {
     case $1 in
@@ -298,21 +112,156 @@ Available commands:
     help                      : Show this message
 "
 echo "ver:${VERSION},github:https://github.com/frimin/ser" ;;
-
     esac
 }
 
-show_host_list () {
-    local host=()
+check_ssh_config() {
+    SSH_CONFIG_FILES=()
+    local IFS=':'
+
+    for FILE in $SER_SSH_CONFIG
+    do
+        [[ -a $FILE ]] && SSH_CONFIG_FILES+=("$FILE")
+    done
+
+    [[ ${#SSH_CONFIG_FILES[@]} -eq 0 ]] && error "no available ssh config file: $SER_SSH_CONFIG"
+}
+
+read_hosts_from_cache() {
+    cat "$SER_HOSTS_CACHE" 
+}
+
+read_hosts_from_ssh_config() {
+    check_host_name() {
+        if [[ "$1" == "*" ]]; then return 0; fi
+        if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
+        return 0
+    }
+
+    [[ -z "${SSH_CONFIG_FILES[*]}" ]] && check_ssh_config
+
     local IFS='
 '
-    local i=0
-    for l in $1 
+    set -f
+
+    local host; local content
+
+    for l in $(cat "${SSH_CONFIG_FILES[@]}" | trim) 
     do
-        local IFS=' '; read -r -a host <<< "$l"
-        local host_port=""
-        ! [[ "${host[3]}" == "#" ]] && host_port=":${host[3]}"
-        ((i++)); echo -e "$i) ${COLOR_LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
+        local IFS='#'; read -r -a l <<< "$l"; local IFS=" "; local options=()
+
+        for p in ${l[0]}; do options+=($p); done
+
+        case ${options[0]} in
+            Host)
+                if [[ -n "${host[*]}" ]]; then
+                    [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
+                    content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
+                fi
+
+                check_host_name "${options[1]}" || error "sorry, patterns not support: ${options[1]}"
+
+                if [[ ${options[1]} == "*" ]]; then
+                    host=(); continue
+                fi
+
+                host=(${options[1]} $USER "" "") ;;
+            User) 
+                [[ -n "${host[*]}" ]] && host[1]=${options[1]} ;;
+            HostName) 
+                [[ -n "${host[*]}" ]] && host[2]=${options[1]} ;;
+            Port) 
+                [[ -n "${host[*]}" ]] && host[3]=${options[1]} ;;
+            Match)
+                error "sorry, 'Match' option not support" ;;
+            *) ;;
+        esac
+    done
+ 
+    # handle last one
+    if [[ -n "${host[*]}" ]]; then
+        [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
+        content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
+    fi
+
+    echo -e "$content"
+}
+
+need_flush() {
+    [[ -z "${SSH_CONFIG_FILES[*]}" ]] && check_ssh_config
+
+    local last; local cur
+
+    [[ -a "$SER_HOSTS_LAST_MODIFY" ]] && last=$(cat "$SER_HOSTS_LAST_MODIFY") 
+
+    case $(uname) in
+        Linux) 
+            cur=$(sha1sum <<< "$VERSION $(stat --printf="%Y" ${SSH_CONFIG_FILES[@]})") ;;
+        Darwin) 
+            cur=$(shasum <<< "$VERSION $(stat -f "%m" ${SSH_CONFIG_FILES[@]})") ;;
+        *) 
+            error "failed to read file modify time on $(uname)" ;;
+    esac
+
+    if [[ "$last" == "$cur" ]]; then
+        return 1
+    else
+        echo "$cur" > "$SER_HOSTS_LAST_MODIFY"
+        return 0
+    fi
+}
+
+HOST_INDEX=0
+HOST=()
+HOSTS=()
+
+match_host () { 
+    eval "[[ $1 == $2 ]]" 2>/dev/null # ignore syntax error
+}
+
+next_host () {
+    [[ -z "${HOSTS[HOST_INDEX]}" ]] && return 1
+    local IFS=' '; HOST=(${HOSTS[HOST_INDEX]})
+    ((HOST_INDEX++))
+    return 0
+}
+
+token () {
+    local s=${1//'{name}'/${HOST[0]}}
+    s=${s//'{i}'/${HOST_INDEX}}
+    echo "$s"
+}
+
+read_host_config() {
+    [[ -a "$HOME/.ssh/config" ]] && CONFIG_FILES+=("$HOME/.ssh/config")
+    local content=''
+    if need_flush "${CONFIG_FILES[@]}"; then
+        content=$(read_hosts_from_ssh_config)
+        echo "$content" > "$SER_HOSTS_CACHE"
+    else
+        content=$(read_hosts_from_cache)
+    fi 
+    echo "$content"
+}
+
+select_hosts () {
+    local name="$1"
+    [[ -z "$name" ]] && name='*' 
+    set -f
+
+    local name="${1:-*}"
+
+    if [[ "$name" =~ $REGEXP_NUMBER ]]; then 
+        HOSTS+=("$(sed -n "${name}p" <<< "$(read_host_config)")")
+        return
+    fi
+
+    local IFS='
+'
+    for l in $(read_host_config) 
+    do
+        local IFS=' '; local host=($l)
+        match_host "${host[0]}" "${name}" && HOSTS+=("$l")
     done
 }
 
@@ -321,26 +270,26 @@ ssh_connect () {
 
     while next_host; 
     do
-        [[ -z "$2" ]] && echo "connecting \"${host[0]}\""
+        [[ -z "$2" ]] && echo "connecting \"${HOST[0]}\""
 
         if [[ -n "$3" ]]; then
-            ssh "${host[0]}" $"$2" > "$(token "$3")" || exit
+            ssh "${HOST[0]}" $"$2" > "$(token "$3")" || exit
         else
-            ssh "${host[0]}" $"$2" || exit
+            ssh "${HOST[0]}" $"$2" || exit
         fi
     done
 
-    [[ $host_index -eq 0 ]] && error "no matching host(s): $1"
+    [[ $HOST_INDEX -eq 0 ]] && error "no matching host(s): $1"
 
     exit 0
 }
 
 read_tunnel_alived_status() {
-    pgrep -U "$(id -u)" -fl ssh | grep -E '^[0-9]+ ssh .*'"$host_forward_tunnels_dirname"
+    pgrep -U "$(id -u)" -fl ssh | grep -E '^[0-9]+ ssh .*'"$SER_TUNNELS_DIRNAME"
 }
 
 read_tunnel_enabled_status() {
-    cat "$host_forward_tunnels/"*.enabled 2>/dev/null
+    cat "$SER_TUNNELS_PATH/"*.enabled 2>/dev/null
 }
 
 select_tunnel() {
@@ -350,7 +299,7 @@ select_tunnel() {
     TUNNEL=''
     TUNNEL_SETS=()
 
-    for name in $host_forward_tunnels/*.tunnel
+    for name in $SER_TUNNELS_PATH/*.tunnel
     do
         name=$(basename "$name")
         name="${name%.*}"
@@ -368,7 +317,7 @@ select_tunnel_by_name() {
     TUNNEL=''
     TUNNEL_SETS=()
 
-    if [[ -a "$host_forward_tunnels/$1.tunnel" ]]; then
+    if [[ -a "$SER_TUNNELS_PATH/$1.tunnel" ]]; then
         TUNNEL_SETS+=("$1")
     fi
 }
@@ -404,7 +353,7 @@ select_forward_from_tunnel() {
 
     local IFS='
 '
-    FORWARD_SETS=($(cat "$host_forward_tunnels/$TUNNEL.tunnel"))
+    FORWARD_SETS=($(cat "$SER_TUNNELS_PATH/$TUNNEL.tunnel"))
 }
 
 next_forward () {
@@ -418,7 +367,7 @@ next_forward () {
 tunnel_alived() {
     local count
 
-    count="$(grep -c "ControlPath=$host_forward_tunnels/$TUNNEL.sock" <<< "$tunnel_alive_status")"
+    count="$(grep -c "ControlPath=$SER_TUNNELS_PATH/$TUNNEL.sock" <<< "$tunnel_alive_status")"
 
     if [[ $count -eq 0 ]]; then
         return 1
@@ -433,12 +382,12 @@ tunnel_alived() {
 
 tunnel_pid() {
     local IFS=' '
-    local arr=($(grep "ControlPath=$host_forward_tunnels/$TUNNEL.sock" <<< "$tunnel_alive_status"))
+    local arr=($(grep "ControlPath=$SER_TUNNELS_PATH/$TUNNEL.sock" <<< "$tunnel_alive_status"))
     [[ "${arr[0]}" =~ $REGEXP_NUMBER ]] && echo "${arr[0]}"
 }
 
 tunnel_enabled() {
-    if [[ -a "$host_forward_tunnels/$TUNNEL.enabled" ]]; then
+    if [[ -a "$SER_TUNNELS_PATH/$TUNNEL.enabled" ]]; then
         return 0
     else
         return 1
@@ -450,7 +399,7 @@ tunnel_connect() {
         '-f'
         '-N'
         '-o' 'ControlMaster=auto'
-        '-o' "ControlPath=$host_forward_tunnels/${TUNNEL}.sock"
+        '-o' "ControlPath=$SER_TUNNELS_PATH/${TUNNEL}.sock"
         '-o' 'ExitOnForwardFailure=yes'
         '-o' 'ConnectTimeout=30'
         '-o' 'ServerAliveInterval=30'
@@ -475,14 +424,14 @@ tunnel_connect() {
         esac
     done
 
-    touch "${host_forward_tunnels}/${TUNNEL}.enabled" 
+    touch "${SER_TUNNELS_PATH}/${TUNNEL}.enabled" 
 
     ssh "$target_host" ${ssh_options[@]}
 }
 
 tunnel_disconnect() {
     # disable tunnel
-    [[ -a "$host_forward_tunnels/$TUNNEL.enabled" ]] && /bin/rm -f "$host_forward_tunnels/$TUNNEL.enabled" 
+    [[ -a "$SER_TUNNELS_PATH/$TUNNEL.enabled" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.enabled" 
     local pid; pid="$(tunnel_pid)"
     [[ "$pid" =~ $REGEXP_NUMBER ]] && kill -s INT "$pid"
 }
@@ -523,7 +472,7 @@ tunnel_add() {
 
     while next_host; 
     do
-        target_host="$host"
+        target_host="${HOST[0]}"
         break
     done
 
@@ -543,7 +492,7 @@ tunnel_add() {
 
     local forward_content="$target_host $3 $bind_addr $read_addr"
 
-    [[ ! -d "$host_forward_tunnels" ]] && mkdir -p "$host_forward_tunnels"
+    [[ ! -d "$SER_TUNNELS_PATH" ]] && mkdir -p "$SER_TUNNELS_PATH"
 
     if next_tunnel; then
         select_forward_from_tunnel
@@ -553,11 +502,11 @@ tunnel_add() {
              [[ "${FORWARD[0]}" != "$target_host" ]] && error "can't specify diffrent host in same tunnel, exists host: ${FORWARD[0]}, try add: $target_host"
         done
 
-        if echo "$forward_content" >> "$host_forward_tunnels/$1.tunnel"; then
+        if echo "$forward_content" >> "$SER_TUNNELS_PATH/$1.tunnel"; then
             echo "add forward \"$forward_content\" to tunnel \"$TUNNEL\" succeed"
         fi
     else
-        if echo "$forward_content" > "$host_forward_tunnels/$1.tunnel"; then
+        if echo "$forward_content" > "$SER_TUNNELS_PATH/$1.tunnel"; then
             echo "add forward \"$forward_content\" to new tunnel \"$1\" succeed"
         fi
     fi
@@ -576,25 +525,78 @@ tunnel_remove() {
         tunnel_alived && echo "stopping tunnel"
         tunnel_disconnect # will delete enable record file and try stop process
         echo "remove tunnel \"$TUNNEL\""
-        /bin/rm -f "$host_forward_tunnels/$TUNNEL.tunnel";
+        /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.tunnel";
     else
         [[ ! "$2" =~ $REGEXP_NUMBER ]] && error "not a index: $2"
-        local tunnel_content; tunnel_content=$(cat "$host_forward_tunnels/$TUNNEL.tunnel")
+        local tunnel_content; tunnel_content=$(cat "$SER_TUNNELS_PATH/$TUNNEL.tunnel")
         if [[ "$(wc -l <<< "$tunnel_content" | trim)" -ge "$2" ]]; then
             echo "rewrite tunnel \"$TUNNEL\" to delete rule #$2"
-            sed "$2d" <<< "$tunnel_content" > "$host_forward_tunnels/$TUNNEL.tunnel";
+            sed "$2d" <<< "$tunnel_content" > "$SER_TUNNELS_PATH/$TUNNEL.tunnel";
         else
             error "tunnel \"$TUNNEL\" not contain index $2"
         fi
     fi
 }
 
+need_check_update() {
+    if [[ -a "$SER_OPTIONS_PATH/last_check_update" ]]; then
+        # check update per week
+        if [[ $(( $(date +%s) - $(cat "$SER_OPTIONS_PATH/last_check_update") )) -lt 604800 ]]; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+check_update() { 
+    date +%s > "$SER_OPTIONS_PATH/last_check_update"
+
+    local IFS='#'
+    local last_ver 
+
+    if ! last_ver=($(curl -s -f "$SER_LAST_VERSION_URL")); then
+        local msg="failed to check update: $SER_LAST_VERSION_URL"
+        if [[ -n "$1" ]]; then
+            echo "$msg" >&2
+            return 1
+        else
+            error "$msg" 
+        fi
+    fi
+
+    local this_ver=($VERSION)
+
+    if [[ ${last_ver[1]} -gt ${this_ver[1]} ]]; then
+        echo "new version available, lastest: ${last_ver[*]}, current: $VERSION"
+        [[ -n "$1" ]] && echo "$1"
+        return 0
+    fi
+
+    return 1
+}
+
+
 [[ ! -d "$SER_OPTIONS_PATH" ]] && mkdir "$SER_OPTIONS_PATH"
 
 if [[ -z "$1" ]]; then 
-    read_host_config
-    show_host_list "$content"; 
-    need_check_update && check_update "use: \"ser update\" update to lastest version"
+    host=()
+    IFS='
+'
+    i=0
+
+    for l in $(read_host_config)
+    do
+        IFS=' '; read -r -a host <<< "$l"
+        host_port=""
+        ! [[ "${host[3]}" == "#" ]] && host_port=":${host[3]}"
+        ((i++)); echo -e "$i) ${COLOR_LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
+    done
+
+    if [[ -n "$SER_LAST_VERSION_URL" && -n "$SER_LAST_SCRIPT_URL" ]]; then
+        need_check_update && check_update "use: \"ser update\" update to lastest version."
+    fi
+
     exit
 fi
 
@@ -606,7 +608,7 @@ case $1 in
 
         while next_host; 
         do
-            echo "${host[0]}"
+            echo "${HOST[0]}"
         done ;;
     cp)
         set -f; IFS=':'
@@ -635,16 +637,16 @@ case $1 in
 
         while next_host; 
         do
-            [[ -n "$from_head" ]] && from_head="${host[0]}:"
-            [[ -n "$to_head" ]] && to_head="${host[0]}:"
+            [[ -n "$from_head" ]] && from_head="${HOST[0]}:"
+            [[ -n "$to_head" ]] && to_head="${HOST[0]}:"
 
             arg0="${from_head}$(token "${from_path}")"
             arg1="${to_head}$(token "${to_path}")"
 
             echo "copy \"${arg0}\" to \"${arg1}\""
 
-            if ! [[ "${host[3]}" == "#" ]]; then
-                scp -P "${host[3]}" ${pass_options[@]} "${arg0}" "${arg1}" || exit
+            if ! [[ "${HOST[3]}" == "#" ]]; then
+                scp -P "${HOST[3]}" ${pass_options[@]} "${arg0}" "${arg1}" || exit
             else
                 scp ${pass_options[@]} "${arg0}" "${arg1}" || exit
             fi
@@ -794,17 +796,20 @@ case $1 in
 
         done ;;
     update)
-        echo "check update"
+        ! [[ -n "$SER_LAST_VERSION_URL" && -n "$SER_LAST_SCRIPT_URL" ]] && error "update address not exists"
+
+        echo "check update ..."
+
         if check_update ''; then
-            echo "downloading"
+            echo "downloading ..."
             if new_content="$(curl -s -f "$SER_LAST_SCRIPT_URL")"; then
-                echo "updating: $SER_PATH"
+                echo "updating: $SER_PATH ..."
                 echo "$new_content" > "$SER_PATH"
             else
-                error "failed to download: $SER_LAST_SCRIPT_URL"
+                error "failed to download: $SER_LAST_SCRIPT_URL."
             fi
         else
-            echo 'no update is available'
+            echo 'no update is available.'
         fi ;;
     *)
         set -f; IFS=''; ssh_connect "$1" "$2" "$3" ;; 
