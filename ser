@@ -8,14 +8,14 @@ SER_OPTIONS_PATH="${SER_OPTIONS_PATH:-$HOME/.ser}"
 SER_LAST_VERSION_URL="${SER_LAST_VERSION_URL:-https://frimin.com/update/ser/last/version}"
 SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/ser}"
 
-## General options ## 
+## General options 
 
 VERSION='0.0.3a2#1'
 
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
-SER_HOSTS_CACHE="$SER_OPTIONS_PATH/cache"
-SER_HOSTS_LAST_MODIFY="$SER_OPTIONS_PATH/cache_date"
+SER_HOSTS_CACHE="$SER_OPTIONS_PATH/hosts"
+SER_HOSTS_LAST_MODIFY="$SER_OPTIONS_PATH/hosts_update"
 SER_TUNNELS_DIRNAME='tunnels'
 SER_TUNNELS_PATH="$SER_OPTIONS_PATH/$SER_TUNNELS_DIRNAME"
 
@@ -27,6 +27,8 @@ NC='\033[0m'
 REGEXP_NUMBER='^[0-9]+$'
 REGEXP_TUNNEL_NAME='^[A-Za-z0-9_\-]+$'
 REGEXP_SPACE='[ \n\t\r\f\v]+'
+
+## functions 
 
 error () { echo "$1" >&2; exit 2; }
 trim () { while read -r line; do echo "$line"; done; }
@@ -187,7 +189,7 @@ read_hosts_from_ssh_config() {
     echo -e "$content"
 }
 
-need_flush() {
+need_refresh_cache() {
     [[ -z "${SSH_CONFIG_FILES[*]}" ]] && check_ssh_config
 
     local last; local cur
@@ -235,7 +237,7 @@ token () {
 read_host_config() {
     [[ -a "$HOME/.ssh/config" ]] && CONFIG_FILES+=("$HOME/.ssh/config")
     local content=''
-    if need_flush "${CONFIG_FILES[@]}"; then
+    if need_refresh_cache "${CONFIG_FILES[@]}"; then
         content=$(read_hosts_from_ssh_config)
         echo "$content" > "$SER_HOSTS_CACHE"
     else
@@ -298,6 +300,10 @@ select_tunnel() {
     TUNNEL_INDEX=0
     TUNNEL=''
     TUNNEL_SETS=()
+
+    local files=("$SER_TUNNELS_PATH/"*.tunnel)
+
+    [[ "${files[*]}" == "$SER_TUNNELS_PATH/*.tunnel" ]] && return
 
     for name in $SER_TUNNELS_PATH/*.tunnel
     do
@@ -576,6 +582,7 @@ check_update() {
     return 1
 }
 
+## Command actions
 
 [[ ! -d "$SER_OPTIONS_PATH" ]] && mkdir "$SER_OPTIONS_PATH"
 
