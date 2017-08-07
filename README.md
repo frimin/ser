@@ -1,42 +1,34 @@
 # ser
 
-Easy to use your ssh config (**/etc/ssh/ssh_config**, **~/.ssh/config**).
+Easy & fast to login your hosts and tunnel manager by using SSH.
 
-Based **ssh**, **scp** (etc...).
+### INSTALL
 
-## INSTALL
+	sudo curl -L https://frimin.com/update/ser/last/ser -o /usr/local/bin/ser
+	sudo chmod a+rx /usr/local/bin/ser
 
-	git clone https://github.com/frimin/ser ~/.ser
-	echo 'PATH=$HOME/.ser:$PATH; export PATH' >> ~/.bash_profile
+## SSH LOGIN USAGE
 
-## USAGE
+### Show all hosts from your SSH configs
 
-### Show all hosts
-
-	ser
-	
-![](imgs/list.gif)
+	$ ser
 
 ### SSH login
 
-	ser <number or name> [command]
-
-![](imgs/connect.gif)
+	$ ser <index|name|pattern> [command]
 	
-### Copy file to all hosts
+### Through SCP copy file to all hosts
 
-	ser cp "file" "*:~/"
-
-![](imgs/cp.gif)
+	$ ser cp "file" "*:~/"
 	
 ### Copy file from all hosts
 
-	ser cp "*:~/file" "save/to/path/file-{name}"
-	
+	$ ser cp "*:~/file" "save/to/path/file-{name}"
+
 ### Get help
 
-	ser help
-	
+	$ ser help
+
 ### SSH config limited support
 	
 The **ser** script need to read these option from each host config:
@@ -61,8 +53,53 @@ So, config file should be like:
 	[Other options ...]
 	
 	# ...
+
+## TUNNEL USAGE
+
+### Create a forward to tunnel
+
+	$ ser tunnel-add <tunnel_name> <host_name> local 80 80
+
+It will be generate a SSH connect command when start tunnel:
 	
-## TODO
-* [ ] LocalForward / RemoteForward connect on background and auto reconnect
-* [ ] support ssh config patterns
-* [ ] support Match options
+	ssh -f -N <host_name> <other_options> -L 127.0.0.1:5000:127.0.0.1:80
+	
+You can create more:
+
+	$ ser add <tunnel_name> <host_name> local 443 443
+	$ ser add <tunnel_name> <host_name> remote 22 8000
+	
+To generate command:
+
+	ssh -f -N <host_name> <other_options> -L 127.0.0.1:5000:127.0.0.1:80 -L 127.0.0.1:443:127.0.0.1:443 -R 127.0.0.1:22:127.0.0.1:8000
+
+### Show all tunnels
+
+	$ ser sl
+	$ ser tunnel-list
+
+### Start tunnels
+
+Mark tunnel enabled and open tunnels (execute generated command).
+
+Start all tunnels:
+	
+	$ ser start
+
+Start one tunnel:
+	
+	$ ser start <tunnel_name>
+
+Start tunnel with pattern:
+	
+	$ ser start '<tunnel_name>*'
+	
+### Stop tunnels
+
+	$ ser stop
+	$ ser stop <tunnel_name>
+	$ ser stop '<tunnel_name>*'
+	
+## LICENSE
+
+MIT

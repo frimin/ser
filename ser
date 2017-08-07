@@ -10,7 +10,7 @@ SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/s
 
 ## General options 
 
-VERSION='0.0.3a2#1'
+VERSION='0.1.0b#1'
 
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
@@ -86,10 +86,10 @@ echo "Usage: $SER_BASENAME tunnel-restart [tunnel_name|pattern]" ;;
 echo "Usage: $SER_BASENAME tunnel-stop [tunnel_name|pattern]" ;;
         tunnel-list|tl)
 echo "Usage: $SER_BASENAME tunnel-list" ;;
-        tunnel-check-step|check)
-echo "Usage: $SER_BASENAME tunnel-check-step
+        tunnel-check|check)
+echo "Usage: $SER_BASENAME tunnel-check
 
-Remember add task to crontab:
+Remember add task to crontab if you need reconnect automatic:
 
 \"crontab <<< '0-59 * * * * bash '$SER_PATH' tunnel-check-step\" " ;;
         *) 
@@ -98,20 +98,21 @@ echo "Usage: $SER_BASENAME <command>
 Type \"$SER_BASENAME help <command>\" for help on a specific command.
 
 Available commands:
-    o|<host|pattern|index>    : Login to host
-    name                      : List all config names  
-    cp                        : Copy file to hosts
+    o|<host|pattern|index>    : Login to host.
+    name                      : List all config name.  
+    cp                        : Copy file to hosts.
 
-    tunnel-add|add            : Add forward to tunnel
-    tunnel-remove|rm          : Remove forward from tunnel 
-    tunnel-start|start        : Start and enable tunnels
-    tunnel-restart|restart    : Restart tunnels if enabled
-    tunnel-stop|stop          : Stop and disable tunnels
-    tunnel-list|tl            : List all tunnels
-    tunnel-check-step|check   : Reconnect tunnels if enabled
+    tunnel-add|add            : Add forward to tunnel.
+    tunnel-remove|rm          : Remove forward from tunnel. 
+    tunnel-start|start        : Start and enable tunnels.
+    tunnel-restart|restart    : Restart tunnels if enabled.
+    tunnel-stop|stop          : Stop and disable tunnels.
+    tunnel-list|tl            : List all tunnels status.
+    tunnel-info|info          : List all tunnels info information.
+    tunnel-check-step|check   : Reconnect tunnels if enabled.
 
-    update                    : Update this program to latest version, Make sure that you have sufficient permissions
-    help                      : Show this message
+    update                    : Update this program to latest version, Make sure that you have sufficient permissions.
+    help                      : Show this message.
 "
 echo "ver:${VERSION},github:https://github.com/frimin/ser" ;;
     esac
@@ -189,6 +190,19 @@ read_hosts_from_ssh_config() {
     echo -e "$content"
 }
 
+filesize() {
+    [[ ! -a "$1" ]] && return 0
+
+    case $(uname) in
+        Linux) 
+            stat --printf="%s" "$1" ;;
+        Darwin) 
+            stat -f "%z" "$1" ;;
+        *) 
+            error "failed to read file size on $(uname)" ;;
+    esac
+}
+
 need_refresh_cache() {
     [[ -z "${SSH_CONFIG_FILES[*]}" ]] && check_ssh_config
 
@@ -198,9 +212,9 @@ need_refresh_cache() {
 
     case $(uname) in
         Linux) 
-            cur=$(sha1sum <<< "$VERSION $(stat --printf="%Y" ${SSH_CONFIG_FILES[@]})") ;;
+            cur=$(sha1sum <<< "$VERSION $(stat --printf="%Y" "${SSH_CONFIG_FILES[@]}")") ;;
         Darwin) 
-            cur=$(shasum <<< "$VERSION $(stat -f "%m" ${SSH_CONFIG_FILES[@]})") ;;
+            cur=$(shasum <<< "$VERSION $(stat -f "%m" "${SSH_CONFIG_FILES[@]}")") ;;
         *) 
             error "failed to read file modify time on $(uname)" ;;
     esac
@@ -432,14 +446,16 @@ tunnel_connect() {
 
     touch "${SER_TUNNELS_PATH}/${TUNNEL}.enabled" 
 
-    ssh "$target_host" ${ssh_options[@]}
+    ssh "$target_host" "${ssh_options[@]}" > "$SER_TUNNELS_PATH/${TUNNEL}.out" 2> "$SER_TUNNELS_PATH/${TUNNEL}.err" 
 }
 
 tunnel_disconnect() {
-    # disable tunnel
-    [[ -a "$SER_TUNNELS_PATH/$TUNNEL.enabled" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.enabled" 
     local pid; pid="$(tunnel_pid)"
     [[ "$pid" =~ $REGEXP_NUMBER ]] && kill -s INT "$pid"
+
+    [[ -a "$SER_TUNNELS_PATH/$TUNNEL.enabled" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.enabled" 
+    [[ -a "$SER_TUNNELS_PATH/$TUNNEL.err" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.err" 
+    [[ -a "$SER_TUNNELS_PATH/$TUNNEL.out" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.out" 
 }
 
 read_forward_address() {
@@ -546,8 +562,8 @@ tunnel_remove() {
 
 need_check_update() {
     if [[ -a "$SER_OPTIONS_PATH/last_check_update" ]]; then
-        # check update per week
-        if [[ $(( $(date +%s) - $(cat "$SER_OPTIONS_PATH/last_check_update") )) -lt 604800 ]]; then
+        # check update per 2 week
+        if [[ $(( $(date +%s) - $(cat "$SER_OPTIONS_PATH/last_check_update") )) -lt 1209600 ]]; then
             return 1
         fi
     fi
@@ -575,7 +591,7 @@ check_update() {
 
     if [[ ${last_ver[1]} -gt ${this_ver[1]} ]]; then
         echo "new version available, lastest: ${last_ver[*]}, current: $VERSION"
-        [[ -n "$1" ]] && echo "$1"
+        [[ -n "$1" ]] && echo -e "$1"
         return 0
     fi
 
@@ -587,6 +603,10 @@ check_update() {
 [[ ! -d "$SER_OPTIONS_PATH" ]] && mkdir "$SER_OPTIONS_PATH"
 
 if [[ -z "$1" ]]; then 
+    if [[ -n "$SER_LAST_VERSION_URL" && -n "$SER_LAST_SCRIPT_URL" ]]; then
+        need_check_update && check_update "${COLOR_GREEN}use: \"ser update\" update to lastest version.${NC}"
+    fi
+
     host=()
     IFS='
 '
@@ -600,9 +620,6 @@ if [[ -z "$1" ]]; then
         ((i++)); echo -e "$i) ${COLOR_LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
     done
 
-    if [[ -n "$SER_LAST_VERSION_URL" && -n "$SER_LAST_SCRIPT_URL" ]]; then
-        need_check_update && check_update "use: \"ser update\" update to lastest version."
-    fi
 
     exit
 fi
@@ -653,17 +670,17 @@ case $1 in
             echo "copy \"${arg0}\" to \"${arg1}\""
 
             if ! [[ "${HOST[3]}" == "#" ]]; then
-                scp -P "${HOST[3]}" ${pass_options[@]} "${arg0}" "${arg1}" || exit
+                scp -P "${HOST[3]}" "${pass_options[@]}" "${arg0}" "${arg1}" || exit
             else
-                scp ${pass_options[@]} "${arg0}" "${arg1}" || exit
+                scp "${pass_options[@]}" "${arg0}" "${arg1}" || exit
             fi
         done ;;
     o)
-        set -f; ssh_connect "$2" "$3" "$4" ;;  
+        set -f; ssh_connect "${@:2}" ;;  
     tunnel-add|add)
-        tunnel_add "$2" "$3" "$4" "$5" "$6";;
+        tunnel_add "${@:2}";;
     tunnel-remove|rm)
-        tunnel_remove "$2" "$3";;
+        tunnel_remove "${@:2}";;
     tunnel-list|tl)
         select_tunnel
 
@@ -671,11 +688,7 @@ case $1 in
         do
             select_forward_from_tunnel
 
-            if tunnel_enabled; then
-                state="[${COLOR_GREEN}enabled${NC}]"
-            else
-                state="[${COLOR_RED}disabled${NC}]"
-            fi
+            tunnel_enabled && state="[${COLOR_GREEN}enabled${NC}]" || state="[${COLOR_RED}disabled${NC}]"
 
             if tunnel_alived; then
                 state="$state [${COLOR_GREEN}connected${NC}]"
@@ -683,20 +696,52 @@ case $1 in
                 state="$state [${COLOR_RED}disconnected${NC}]"
             fi
 
+            echo -e "${COLOR_LIGHT_GRAY}${TUNNEL}${NC} - ${state}"
+        done
+        ;;
+    tunnel-info|info)
+        [[ -z "$2" ]] && tunnel_name='*' || tunnel_name="$2"
+
+        select_tunnel
+
+        while next_tunnel
+        do
+            if [[ "${TUNNEL}" != ''$tunnel_name ]]; then
+                continue
+            fi
+
+            select_forward_from_tunnel
+
             while next_forward
             do
                 if [[ "$FORWARD_INDEX" -eq 1 ]]; then
-                    echo -e "$TUNNEL_INDEX) ${COLOR_LIGHT_GRAY}${TUNNEL}${NC} - [${FORWARD[0]}] ${state}"
+                    echo -e " # tunnel: ${COLOR_LIGHT_GRAY}${TUNNEL}${NC}"
+                    echo -e " - host: ${FORWARD[0]} ${state}"
+                    echo -e " - enable: \c"
+                    tunnel_enabled && echo -e "${COLOR_GREEN}yes${NC}" || echo -e "${COLOR_RED}no${NC}"
+                    echo -e " - connect: \c"
+                    tunnel_alived && echo -e "${COLOR_GREEN}yes${NC}" || echo -e "${COLOR_RED}no${NC}"
+                    echo -e " - pid: \c"
+                    tunnel_alived && tunnel_pid || echo '-'
+                    echo -e " - out file: $SER_TUNNELS_PATH/$TUNNEL.out"
+                    echo -e " - error file: $SER_TUNNELS_PATH/$TUNNEL.err\c"
+                    if [[ "$(filesize "$SER_TUNNELS_PATH/$TUNNEL.err")" -gt 0 ]]; then 
+                        echo -e " (${COLOR_RED}errored${NC})" 
+                        echo -e " - last error: ${COLOR_RED}$(sed -n '$p' "$SER_TUNNELS_PATH/$TUNNEL.err")${NC}"
+                    else 
+                        echo "" 
+                    fi
                 fi
 
                 case "${FORWARD[1]}" in 
-                    local) echo " - #$FORWARD_INDEX Forward (local) ${FORWARD[2]} <= (remote) ${FORWARD[3]}" ;;
-                    remote) echo " - #$FORWARD_INDEX Forward (local) ${FORWARD[3]} => (remote) ${FORWARD[2]}" ;;
+                    local) echo " - forward #$FORWARD_INDEX: (local) ${FORWARD[2]} <= (remote) ${FORWARD[3]}" ;;
+                    remote) echo " - forward #$FORWARD_INDEX: (local) ${FORWARD[3]} => (remote) ${FORWARD[2]}" ;;
                     *) error "invalid line: '$LINE'" ;;
                 esac
-            done
+            done 
         done
         ;;
+
     tunnel-start|start)
         [[ -z "$2" ]] && tunnel_name='*' || tunnel_name="$2"
 
@@ -768,7 +813,7 @@ case $1 in
             fi
 
             if tunnel_enabled; then
-                echo -e "[${COLOR_GREEN}RESTART TUNNEL${NC}] - $TUNNEL\n"
+                echo -e "[${COLOR_GREEN}RESTART TUNNEL${NC}] - $TUNNEL\c"
                 tunnel_disconnect
 
                 if tunnel_connect; then
@@ -778,7 +823,7 @@ case $1 in
                 fi
             fi
         done ;;
-    tunnel-check-step|check)
+    tunnel-check|check)
         select_tunnel
 
         while next_tunnel
@@ -803,7 +848,7 @@ case $1 in
 
         done ;;
     update)
-        ! [[ -n "$SER_LAST_VERSION_URL" && -n "$SER_LAST_SCRIPT_URL" ]] && error "update address not exists"
+        ! [[ -n "$SER_LAST_VERSION_URL" && -n "$SER_LAST_SCRIPT_URL" ]] && error "update unavailable: update address not exists"
 
         echo "check update ..."
 
