@@ -1,11 +1,15 @@
 # ser
 
-使用 Bash Shell 编写的终端下的 SSH 登录辅助工具，以及隧道管理工具。
+使用 Bash Shell 编写的终端下的 SSH 登录辅助工具，以及隧道进程管理工具。
 
 ### 安装
 
 	sudo curl -L https://frimin.com/update/ser/last/ser -o /usr/local/bin/ser
 	sudo chmod a+rx /usr/local/bin/ser
+	
+### 更新
+
+	sudo ser update
 	
 ## SSH 登录功能
 
@@ -13,11 +17,32 @@
 
 	$ ser
 	
+会以如下形式显示主机列表:
+
+	1) myhost1 - user@myhost1.com:22
+	2) myhost2 - user@myhost2.com:22
+	3) myhost3 - user@myhost3.com:22
+	...
+		
 ### SSH 登入
 
-	$ ser <index|name|pattern> [command]
+通过主机列表中显示的索引:
+
+	$ ser 1
 	
-当然也可以添加一段命令在所有主机上执行:
+通过主机名:
+
+	$ ser myhost1
+	
+或者是文本模式:
+
+	$ ser 'myh*'
+	
+当然也可以添加一段命令在主机上执行:
+
+	$ ser 1 'ls -alh'
+
+或者是所有主机:	
 
 	$ ser '*' 'ls -alh'
 	
@@ -35,30 +60,30 @@ SSH 配置支持基于匹配模式的主机名和 **match** 字段，一个主�
 	
 	Host *host
 	User user
-	HostName myhost.com
+	HostName myhost1.com
 	
-	Host myhost
+	Host myhost1
 	Port 1234
 
 然后可以通过 **SSH** 登入:
 
-	$ ssh myhost
+	$ ssh myhost1
 
 等价于:
 
-	$ ssh user@myhost.com -p 1234
+	$ ssh user@myhost1.com -p 1234
 
 但是 **ser** 目前只能识别对于单个配置下的完整配置，所以配置应该是如下形式:
 
-	Host host1
-	HostName host1.abcd.com
-	User username
+	Host myhost1
+	HostName myhost1.com
+	User user
 	[Port 22]
 	[其它配置 ...]
 	
-	Host host2
-	HostName host2.abcd.com
-	User username
+	Host myhost2
+	HostName myhost2.com
+	User user
 	[Port 22]
 	[其它配置 ...]
 	
@@ -154,8 +179,8 @@ SSH 配置支持基于匹配模式的主机名和 **match** 字段，一个主�
 	 - enable: yes
 	 - connect: yes
 	 - pid: 30103
-	 - out file: ~/.ser/tunnels/frimin.out
-	 - error file: ~/.ser/tunnels/frimin.err
+	 - out file: ~/.ser/tunnels/myhost1.out
+	 - error file: ~/.ser/tunnels/myhost1.err
 	 - forward #1: (local) 127.0.0.1:80 <= (remote) 127.0.0.1:80
 
 ### 检查隧道状态

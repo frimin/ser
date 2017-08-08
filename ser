@@ -77,7 +77,7 @@ tokens:
 echo "Usage: $SER_BASENAME tunnel-add <tunnel_name> <host> local [bind_address:]<bind_port> [host:]<host_port>
        $SER_BASENAME tunnel-add <tunnel_name> <host> remote [bind_address:]<bind_port> [host>:]<host_port>";;
         tunnel-remove|rm)
-echo "Usage: $SER_BASENAME tunnel-remove <tunnel_name> <forward_index>" ;;
+echo "Usage: $SER_BASENAME tunnel-remove <tunnel_name> [forward_index]" ;;
         tunnel-start|start)
 echo "Usage: $SER_BASENAME tunnel-start [tunnel_name|pattern]" ;;
         tunnel-restart|restart)
@@ -109,7 +109,7 @@ Available commands:
     tunnel-stop|stop          : Stop and disable tunnels.
     tunnel-list|tl            : List all tunnels status.
     tunnel-info|info          : List all tunnels info information.
-    tunnel-check-step|check   : Reconnect tunnels if enabled.
+    tunnel-check-step|check   : Connect enabled tunnels when disconected.
 
     update                    : Update this program to latest version, Make sure that you have sufficient permissions.
     help                      : Show this message.
@@ -195,9 +195,9 @@ filesize() {
 
     case $(uname) in
         Linux) 
-            stat --printf="%s" "$1" ;;
+            /usr/bin/stat --printf="%s" "$1" ;;
         Darwin) 
-            stat -f "%z" "$1" ;;
+            /usr/bin/stat -f "%z" "$1" ;;
         *) 
             error "failed to read file size on $(uname)" ;;
     esac
@@ -212,9 +212,9 @@ need_refresh_cache() {
 
     case $(uname) in
         Linux) 
-            cur=$(sha1sum <<< "$VERSION $(stat --printf="%Y" "${SSH_CONFIG_FILES[@]}")") ;;
+            cur=$(sha1sum <<< "$VERSION $(/usr/bin/stat --printf="%Y" "${SSH_CONFIG_FILES[@]}")") ;;
         Darwin) 
-            cur=$(shasum <<< "$VERSION $(stat -f "%m" "${SSH_CONFIG_FILES[@]}")") ;;
+            cur=$(shasum <<< "$VERSION $(/usr/bin/stat -f "%m" "${SSH_CONFIG_FILES[@]}")") ;;
         *) 
             error "failed to read file modify time on $(uname)" ;;
     esac
@@ -323,13 +323,13 @@ select_tunnel() {
     do
         name=$(basename "$name")
         name="${name%.*}"
-        #[[ ! "$name" =~ $REGEXP_TUNNEL_NAME ]] && error "illegal sesssion name: $name"
+        [[ ! "$name" =~ $REGEXP_TUNNEL_NAME ]] && error "illegal tunnel name: $name"
         TUNNEL_SETS+=("$name")
     done
 }
 
 select_tunnel_by_name() {
-    [[ ! "$1" =~ $REGEXP_TUNNEL_NAME ]] && error "illegal sesssion name: $1"
+    [[ ! "$1" =~ $REGEXP_TUNNEL_NAME ]] && error "illegal tunnel name: $1"
 
     tunnel_alive_status=$(read_tunnel_alived_status)
 
@@ -485,7 +485,7 @@ tunnel_add() {
     [[ -z "$4" || -z "$5" ]] && error "please enter local and remote forward address" 
 
     if [[ ! "$1" =~ $REGEXP_TUNNEL_NAME ]]; then
-        error "illegal sesssion name: $1"
+        error "illegal tunnel name: $1"
     fi
 
     select_hosts "$2"
@@ -813,7 +813,7 @@ case $1 in
             fi
 
             if tunnel_enabled; then
-                echo -e "[${COLOR_GREEN}RESTART TUNNEL${NC}] - $TUNNEL\c"
+                echo -e "[${COLOR_GREEN}RESTART TUNNEL${NC}] - $TUNNEL: \c"
                 tunnel_disconnect
 
                 if tunnel_connect; then
@@ -857,6 +857,7 @@ case $1 in
             if new_content="$(curl -s -f "$SER_LAST_SCRIPT_URL")"; then
                 echo "updating: $SER_PATH ..."
                 echo "$new_content" > "$SER_PATH"
+                chmod a+rx "$SER_PATH"
             else
                 error "failed to download: $SER_LAST_SCRIPT_URL."
             fi
