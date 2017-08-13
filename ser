@@ -91,7 +91,7 @@ echo "Usage: $SER_BASENAME tunnel-check
 
 Remember add task to crontab if you need reconnect automatic:
 
-\"crontab <<< '0-59 * * * * bash '$SER_PATH' tunnel-check-step\" " ;;
+\"crontab <<< '0-59 * * * * bash '$SER_PATH' tunnel-check\" " ;;
         *) 
 echo "Usage: $SER_BASENAME <command> 
 
@@ -109,7 +109,7 @@ Available commands:
     tunnel-stop|stop          : Stop and disable tunnels.
     tunnel-list|tl            : List all tunnels status.
     tunnel-info|info          : List all tunnels info information.
-    tunnel-check-step|check   : Connect enabled tunnels when disconected.
+    tunnel-check|check        : Connect enabled tunnels when disconected.
 
     update                    : Update this program to latest version, Make sure that you have sufficient permissions.
     help                      : Show this message.
