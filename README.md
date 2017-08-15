@@ -246,7 +246,7 @@ SSH 配置支持基于匹配模式的主机名和 **match** 字段，一个主�
 	
 可以将这个命令加入到 crontab 实现断开的连接进行自动重连:
 
-	crontab <<< '0-59 * * * * bash '/path/to/ser' tunnel-check-step
+	crontab <<< '0-59 * * * * bash '/path/to/ser' tunnel-check
 
 上列命令可以通过 `ser help tunnel-check` 列出。
 	 

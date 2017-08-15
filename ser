@@ -10,7 +10,7 @@ SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/s
 
 ## General options 
 
-VERSION='0.1.0b2#2'
+VERSION='0.1.0b3#3'
 
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
@@ -27,8 +27,9 @@ NC='\033[0m'
 REGEXP_NUMBER='^[0-9]+$'
 REGEXP_TUNNEL_NAME='^[A-Za-z0-9_\-]+$'
 REGEXP_SPACE='[ \n\t\r\f\v]+'
+REGEXP_PATTERN_HOSTNAME='^.*[\.\*!,].*$'
 
-## functions 
+## Functions 
 
 error () { echo "$1" >&2; exit 2; }
 trim () { while read -r line; do echo "$line"; done; }
@@ -135,12 +136,6 @@ read_hosts_from_cache() {
 }
 
 read_hosts_from_ssh_config() {
-    check_host_name() {
-        if [[ "$1" == "*" ]]; then return 0; fi
-        if [[ "$1" == *"*"* || "$1" == *"?"* || "$1" == *"!"* || "$1" == *","* ]]; then return 1; fi
-        return 0
-    }
-
     [[ -z "${SSH_CONFIG_FILES[*]}" ]] && check_ssh_config
 
     local IFS='
@@ -156,27 +151,24 @@ read_hosts_from_ssh_config() {
         for p in ${l[0]}; do options+=($p); done
 
         case ${options[0]} in
-            Host)
+            Host|Match)
                 if [[ -n "${host[*]}" ]]; then
                     [[ -n ${host[3]} ]] && host_port="${host[3]}" || host_port="#"
                     content+="${host[0]} ${host[1]} ${host[2]} ${host_port}\n"    
                 fi
 
-                check_host_name "${options[1]}" || error "sorry, patterns not support: ${options[1]}"
-
-                if [[ ${options[1]} == "*" ]]; then
-                    host=(); continue
-                fi
-
-                host=(${options[1]} $USER "" "") ;;
+                # ignore pattern style host name
+                if [[ "${options[0]}" == "Match" || "${options[1]}" =~ $REGEXP_PATTERN_HOSTNAME ]]; then
+                    host=()
+                else
+                    host=(${options[1]} $USER "" "") 
+                fi ;;
             User) 
                 [[ -n "${host[*]}" ]] && host[1]=${options[1]} ;;
             HostName) 
                 [[ -n "${host[*]}" ]] && host[2]=${options[1]} ;;
             Port) 
                 [[ -n "${host[*]}" ]] && host[3]=${options[1]} ;;
-            Match)
-                error "sorry, 'Match' option not support" ;;
             *) ;;
         esac
     done
@@ -620,7 +612,6 @@ if [[ -z "$1" ]]; then
         ((i++)); echo -e "$i) ${COLOR_LIGHT_GRAY}${host[0]}${NC} - ${host[1]}@${host[2]}${host_port}"
     done
 
-
     exit
 fi
 
@@ -845,7 +836,6 @@ case $1 in
             else
                 echo "FAILED, EXIT CODE: $?"
             fi
-
         done ;;
     update)
         ! [[ -n "$SER_LAST_VERSION_URL" && -n "$SER_LAST_SCRIPT_URL" ]] && error "update unavailable: update address not exists"
@@ -856,8 +846,7 @@ case $1 in
             echo "downloading ..."
             if new_content="$(curl -s -f "$SER_LAST_SCRIPT_URL")"; then
                 echo "updating: $SER_PATH ..."
-                echo "$new_content" > "$SER_PATH"
-                chmod a+rx "$SER_PATH"
+                exec cat > "$SER_PATH" <<< "$new_content" && chmod u+rx "$SER_PATH"
             else
                 error "failed to download: $SER_LAST_SCRIPT_URL."
             fi
