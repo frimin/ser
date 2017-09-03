@@ -69,7 +69,8 @@ examples:
     $SER_BASENAME o \"host1\"
     $SER_BASENAME \"host1\"
     $SER_BASENAME \"*\" \"ls\"
-    $SER_BASENAME \"*\" \"ls\" \"result-{name}\"
+    $SER_BASENAME \"*\" \"ls\" \"redirect-file-{name}\"
+    echo 'content' | $SER_BASENAME '*' 'echo \$HOSTNAME; cat'
 
 tokens:
     {i} - config index
@@ -253,6 +254,10 @@ read_host_config() {
 }
 
 select_hosts () {
+    HOST_INDEX=0
+    HOST=()
+    HOSTS=()
+
     local name="$1"
     [[ -z "$name" ]] && name='*' 
     set -f
@@ -274,18 +279,62 @@ select_hosts () {
 }
 
 ssh_connect () {
+    local stdin_store_file=/dev/null
+    local need_store=0
+
     select_hosts "$1"
 
-    while next_host; 
-    do
-        [[ -z "$2" ]] && echo "connecting \"${HOST[0]}\""
+    # if need store stdin to tempfile ?
+    if [[ ! -t 0 ]] && [[ -n "$2" ]] && next_host && next_host; then 
+        stdin_store_file="$(mktemp)"
+        need_store=1
+    fi
 
-        if [[ -n "$3" ]]; then
-            ssh "${HOST[0]}" $"$2" > "$(token "$3")" || exit
-        else
-            ssh "${HOST[0]}" $"$2" || exit
-        fi
-    done
+    select_hosts "$1"
+
+    if [[ $need_store -ne 1 ]]; then 
+        while next_host; 
+        do
+            [[ -z "$2" ]] && echo "connecting \"${HOST[0]}\""
+
+            if [[ -n "$3" ]]; then
+                    ssh "${HOST[0]}" $"$2" > "$(token "$3")" < "$stdin_store_file" || exit;
+            elif [[ -n "$2" ]]; then
+                ssh "${HOST[0]}" $"$2" || exit;
+            else
+                exec ssh "${HOST[0]}" || exit
+            fi
+        done
+    else
+        clean_tempfile() {
+            [[ $stdin_store_file != /dev/null ]] && /bin/rm -f "$stdin_store_file"
+        }
+
+        while next_host; 
+        do
+            [[ -z "$2" ]] && echo "connecting \"${HOST[0]}\""
+
+            if [[ -n "$3" ]]; then
+                if [[ $need_store -eq 1 ]]; then
+                    tee -a "$stdin_store_file" | ssh "${HOST[0]}" $"$2" > "$(token "$3")" || { clean_tempfile; exit; }
+                else
+                    ssh "${HOST[0]}" $"$2" > "$(token "$3")" < "$stdin_store_file" || { clean_tempfile; exit; }
+                fi
+            elif [[ -n "$2" ]]; then
+                if [[ $need_store -eq 1 ]]; then
+                    tee "$stdin_store_file" | ssh "${HOST[0]}" $"$2" || { clean_tempfile; exit; }
+                else
+                    ssh "${HOST[0]}" $"$2" < "$stdin_store_file" || { clean_tempfile; exit; }
+                fi
+            else
+                exec ssh "${HOST[0]}" || exit
+            fi
+
+            need_store=0
+        done
+
+        clean_tempfile
+    fi
 
     [[ $HOST_INDEX -eq 0 ]] && error "no matching host(s): $1"
 
@@ -438,7 +487,7 @@ tunnel_connect() {
 
     touch "${SER_TUNNELS_PATH}/${TUNNEL}.enabled" 
 
-    ssh "$target_host" "${ssh_options[@]}" > "$SER_TUNNELS_PATH/${TUNNEL}.out" 2> "$SER_TUNNELS_PATH/${TUNNEL}.err" 
+    ssh "$target_host" $"${ssh_options[@]}" > "$SER_TUNNELS_PATH/${TUNNEL}.out" 2> "$SER_TUNNELS_PATH/${TUNNEL}.err" < /dev/null 
 }
 
 tunnel_disconnect() {
@@ -661,9 +710,9 @@ case $1 in
             echo "copy \"${arg0}\" to \"${arg1}\""
 
             if ! [[ "${HOST[3]}" == "#" ]]; then
-                scp -P "${HOST[3]}" "${pass_options[@]}" "${arg0}" "${arg1}" || exit
+                scp -P "${HOST[3]}" "${pass_options[@]}" "${arg0}" "${arg1}" < /dev/null|| exit
             else
-                scp "${pass_options[@]}" "${arg0}" "${arg1}" || exit
+                scp "${pass_options[@]}" "${arg0}" "${arg1}" < /dev/null || exit
             fi
         done ;;
     o)
