@@ -2,6 +2,7 @@
 
 ## Environment options
 
+SER_DEBUG_MODE=${SER_DEBUG_MODE:-0}
 SER_SSH_CONFIG="${SER_SSH_CONFIG:-/etc/ssh/ssh_config:$HOME/.ssh/config}"
 SER_OPTIONS_PATH="${SER_OPTIONS_PATH:-$HOME/.ser}"
 
@@ -32,9 +33,13 @@ REGEXP_PATTERN_HOSTNAME='^.*[\.\*!,].*$'
 ## Functions 
 
 error () { echo "$1" >&2; exit 255; }
+debug_msg() { [[ $SER_DEBUG_MODE -eq 1 ]] && echo -e "${COLOR_RED}[DEBUG]${NC} $1"; }
 trim () { while read -r line; do echo "$line"; done; }
+do_cmd () { debug_msg "\$ $*"; $1 "${@:2}"; }
 
 help () {
+    local TOKEN_HELP="{i} - config index
+    {name} - config name"
     case $1 in
         name)
 echo "Usage: $SER_BASENAME name [name] 
@@ -47,18 +52,23 @@ examples:
     $SER_BASENAME name \"my*\"
 " ;;
         cp) 
-echo "Usage: $SER_BASENAME cp <from> <to> [pass to scp options] 
+echo "Usage: $SER_BASENAME cp [options] <source ...> [:] <destination_file ...> 
+       $SER_BASENAME cp [options] <source ...> [:] <destination_directory ...>
 
 copy file to hosts 
 
 examples:
-    $SER_BASENAME cp \"file\" \"*:~/\"
-    $SER_BASENAME cp \"*:~/file\" \"save/to/path/file-{name}\"
-    $SER_BASENAME cp \"dir\" \"*:~/\" -r
-    $SER_BASENAME cp \"*:~/dir\" \"save/to/path/{name}\" -r
-
-tokens:
-    (see \"$SER_BASENAME help o\" tokes section)";;
+    # copy local file/dir to each host:
+    $SER_BASENAME cp file \"*:~/\" 
+    $SER_BASENAME cp -r \"dir\" \"*:~/\"
+    # copy local files to each host:
+    $SER_BASENAME cp file1 file2 \"*:~/save/to/directory\"
+    $SER_BASENAME cp file1 file2 : \"*:~/save/to/directory\" {1,2}:~/save/to/directory
+    # copy remote files to local
+    $SER_BASENAME cp \"hostname:~/file/to/path\" \"save/to/path\"
+    $SER_BASENAME cp {1,2}:file \"pattern*:~/file\" \"save/to/directory\"
+    $SER_BASENAME cp {1,2}:file \"pattern*:~/file\" : \"save/to/directory\"
+    $SER_BASENAME cp -r \"*:~/directory\" \"save/to/path\"";;
         o) 
 echo "Usage: $SER_BASENAME o <host|index> [command] [redirect result to file] 
 
@@ -73,8 +83,7 @@ examples:
     echo 'content' | $SER_BASENAME '*' 'echo \$HOSTNAME; cat'
 
 tokens:
-    {i} - config index
-    {name} - config name";;
+    $TOKEN_HELP";;
         tunnel-add|add)
 echo "Usage: $SER_BASENAME tunnel-add <tunnel_name> <host> local [bind_address:]<bind_port> [host:]<host_port>
        $SER_BASENAME tunnel-add <tunnel_name> <host> remote [bind_address:]<bind_port> [host>:]<host_port>
@@ -337,7 +346,7 @@ ssh_connect () {
         clean_tempfile
     fi
 
-    [[ $HOST_INDEX -eq 0 ]] && error "no matching host(s): $1"
+    [[ $HOST_INDEX -eq 0 ]] && error "host index or pattern not exists: $1"
 
     exit 0
 }
@@ -645,6 +654,74 @@ check_update() {
     return 1
 }
 
+copy() {
+    local passargs=()
+    
+    while getopts "12346BCpqrvc:F:i:l:o:P:S:" o; do
+        [[ $o == "?" ]] && exit 255
+
+        if [[ -z "$OPTARG" ]]; then
+            passargs+=("-$o")
+        else
+            passargs+=("-$o" "$OPTARG")
+        fi
+    done
+
+    shift $((OPTIND-1))
+
+    debug_msg "OPTIONS: '${passargs[*]}'"
+
+    # parse hostname
+    local path_list=()
+
+    for path in "$@"; do
+        if [[ "$path" =~ ^(.+):(.+)$ ]]; then
+            local filepath="${BASH_REMATCH[2]}"
+            select_hosts "${BASH_REMATCH[1]}"
+            while next_host; do
+                path_list+=("${HOST[0]}:${filepath}")
+            done
+        else
+            path_list+=("$path")
+        fi
+    done
+
+    local src_path=()
+    local dest_path=()
+    local split_sign=0
+    local path_last_index=$((${#path_list[@]}-1))
+
+    for ((i=0; i!="${#path_list[@]}"; i++)); do
+        local path="${path_list[i]}"
+
+        [[ $path == ':' ]] && split_sign=1 && continue
+
+        if [[ $split_sign -eq 0 && $i -ne "$path_last_index" ]]; then
+            src_path+=("$path")
+        else
+            dest_path+=("$path")
+        fi
+    done
+
+    debug_msg "SOURCES: ${src_path[*]}"
+    debug_msg "DESTINATIONS: ${dest_path[*]}"
+
+    [[ ${#src_path[@]} -eq 0 ]] && error "no srouce path" 
+    [[ ${#dest_path[@]} -eq 0 ]] && error "no destination path" 
+
+    if [[ ${#dest_path[@]} -eq 1 ]]; then
+        do_cmd scp "${passargs[@]}" "${src_path[@]}" "${dest_path[@]}"
+    else
+        for dest in "${dest_path[@]}"; do
+            for src in "${src_path[@]}"; do
+                if ! do_cmd scp "${passargs[@]}" "$src" "$dest"; then
+                    exit 255
+                fi
+            done
+        done
+    fi
+}
+
 ## Command actions
 
 [[ ! -d "$SER_OPTIONS_PATH" ]] && mkdir "$SER_OPTIONS_PATH"
@@ -681,48 +758,18 @@ case $1 in
             echo "${HOST[0]}"
         done ;;
     cp)
-        set -f; IFS=':'
-        from=($2); to=($3)
-        [[ ${#from[@]} -lt 2 && ${#to[@]} -lt 2 ]] && error "need to pass <host> or <index> for copy to or copy from" 
-
-        if [[ ${#from[@]} -lt 2 ]]; then
-            pattern="${to[0]}"
-            from_path="$2"    
-            from_head=""
-            to_head="<host>:"
-            to_path="${3#*:}"
-        else
-            pattern="${from[0]}"
-            from_head="<host>:"
-            from_path="${2#*:}"
-            to_head=""
-            to_path="$3"
-        fi
-
-        # echo "pattern \"$pattern\", ${from_head}${from_path} => ${to_head}${to_path}"
-
-        select_hosts "$pattern"
-
-        pass_options=(${@:4})
-
-        while next_host; 
-        do
-            [[ -n "$from_head" ]] && from_head="${HOST[0]}:"
-            [[ -n "$to_head" ]] && to_head="${HOST[0]}:"
-
-            arg0="${from_head}$(token "${from_path}")"
-            arg1="${to_head}$(token "${to_path}")"
-
-            echo "copy \"${arg0}\" to \"${arg1}\""
-
-            if ! [[ "${HOST[3]}" == "#" ]]; then
-                scp -P "${HOST[3]}" "${pass_options[@]}" "${arg0}" "${arg1}" < /dev/null|| exit
-            else
-                scp "${pass_options[@]}" "${arg0}" "${arg1}" < /dev/null || exit
-            fi
-        done ;;
+        copy "${@:2}" ;;
     o)
         set -f; ssh_connect "${@:2}" ;;  
+    proxy)
+        select_hosts "$2"
+
+        ! next_host && error "host index or pattern not exists: $2" 
+    
+        port="${HOST[3]}"; [[ "$port" == '#' ]] && port=22
+
+        ssh "${HOST[0]}" -W $"${HOST[2]}:$port" 2> /dev/null
+        ;;
     tunnel-add|add)
         tunnel_add "${@:2}";;
     tunnel-remove|rm)
