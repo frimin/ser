@@ -30,6 +30,9 @@ REGEXP_TUNNEL_NAME='^[A-Za-z0-9_\-]+$'
 REGEXP_SPACE='[ \n\t\r\f\v]+'
 REGEXP_PATTERN_HOSTNAME='^.*[\.\*!,].*$'
 
+CMD_UNSTABLE="$COLOR_RED[UNSTABLE]$NC"
+CMD_EXPERIMENTAL="$COLOR_RED[EXPERIMENTAL]$NC"
+
 ## Functions 
 
 error () { echo "$1" >&2; exit 255; }
@@ -52,17 +55,17 @@ examples:
     $SER_BASENAME name \"my*\"
 " ;;
         cp) 
-echo "Usage: $SER_BASENAME cp [options] <source ...> [:] <destination_file ...> 
+echo -e "Usage: $SER_BASENAME cp [options] <source ...> [:] <destination_file ...> 
        $SER_BASENAME cp [options] <source ...> [:] <destination_directory ...>
 
-copy file to hosts 
+${CMD_UNSTABLE} copy file to hosts 
 
 examples:
     # copy local file/dir to each host:
-    $SER_BASENAME cp file \"*:~/\" 
-    $SER_BASENAME cp -r \"dir\" \"*:~/\"
+    $SER_BASENAME cp file : \"*:~/\" 
+    $SER_BASENAME cp -r \"dir\" : \"*:~/\"
     # copy local files to each host:
-    $SER_BASENAME cp file1 file2 \"*:~/save/to/directory\"
+    $SER_BASENAME cp file1 file2 : \"*:~/save/to/directory\"
     $SER_BASENAME cp file1 file2 : \"*:~/save/to/directory\" {1,2}:~/save/to/directory
     # copy remote files to local
     $SER_BASENAME cp \"hostname:~/file/to/path\" \"save/to/path\"
@@ -70,9 +73,9 @@ examples:
     $SER_BASENAME cp {1,2}:file \"pattern*:~/file\" : \"save/to/directory\"
     $SER_BASENAME cp -r \"*:~/directory\" \"save/to/path\"";;
         o) 
-echo "Usage: $SER_BASENAME o <host|index> [command] [redirect result to file] 
+echo -e "Usage: $SER_BASENAME [o] <index|pattern> [command] [redirect_stdout_to_filename] 
 
-login or executed command on the remote host
+$CMD_EXPERIMENTAL $CMD_UNSTABLE login or executed command on the remote host
 
 examples:
     $SER_BASENAME \"host1\"
@@ -103,16 +106,16 @@ echo "Usage: $SER_BASENAME tunnel-check
 
 Remember add task to crontab if you need reconnect automatic:
 
-\"crontab <<< '0-59 * * * * bash '$SER_PATH' tunnel-check\" " ;;
+crontab <<< '0-59 * * * * bash $SER_PATH tunnel-check' " ;;
         *) 
-echo "Usage: $SER_BASENAME <command> 
+echo -e "Usage: $SER_BASENAME <command> 
 
 Type \"$SER_BASENAME help <command>\" for help on a specific command.
 
 Available commands:
-    o|<host|pattern|index>    : Login to host.
+    o|<host|pattern|index>    : Login to host. ${CMD_EXPERIMENTAL} ${CMD_UNSTABLE}
     name                      : List all config name.  
-    cp                        : Copy file to hosts.
+    cp                        : Copy file to hosts. ${CMD_UNSTABLE}
 
     tunnel-add|add            : Add forward to tunnel.
     tunnel-remove|rm          : Remove forward from tunnel. 
@@ -297,6 +300,7 @@ ssh_connect () {
     # if need store stdin to tempfile ?
     if [[ ! -t 0 ]] && [[ -n "$2" ]] && next_host && next_host; then 
         stdin_store_file="$(mktemp)"
+        debug_msg "CREATE STDIN TEMP FILE: $stdin_store_file"
         need_store=1
     fi
 
@@ -308,7 +312,7 @@ ssh_connect () {
             [[ -z "$2" ]] && echo "connecting \"${HOST[0]}\""
 
             if [[ -n "$3" ]]; then
-                    ssh "${HOST[0]}" $"$2" > "$(token "$3")" < "$stdin_store_file" || exit;
+                ssh "${HOST[0]}" $"$2" > "$(token "$3")" < "$stdin_store_file" || exit;
             elif [[ -n "$2" ]]; then
                 ssh "${HOST[0]}" $"$2" || exit;
             else
