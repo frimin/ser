@@ -4,12 +4,11 @@
 
 ### 安装 & 更新
 
-	# install
-	$ sudo curl -L https://frimin.com/update/ser/last/ser -o /usr/local/bin/ser
-	$ sudo chmod a+rx /usr/local/bin/ser
+	# install & update
+	$ curl https://frimin.com/update/ser/install.sh | bash -
 
-	# update
-	$ sudo ser update
+	# update only
+	$ ser update
 
 ### 准备工作
 
