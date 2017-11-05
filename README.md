@@ -29,46 +29,25 @@
 		
 ### SSH 登入
 
-	ser [o] <host|index> [command] [redirect_stdout_to_filename]
+	ser [o] [ssh_options] <index|pattern ...> [: <command>]
 
 通过主机列表中显示的索引可以登入列表中的主机，下列指令等价 `ssh myhost1 `，其中子命令 `o` 是可选的，如果你的主机名和其它子命令名称相冲突，则必须使用子命令 `o`:
 
 	$ ser 1
 	$ ser o 1
 	
-通过主机名或者通配符，登入时使用通配符只会登入与之匹配的第一个主机:
+通过主机名或通配符:
 
 	$ ser myhost1
 	$ ser 'myh*'
 	
-当然也可以添加一段命令在主机上执行:
+也可以添加一段命令在主机上执行，请注意位于主机列表后的命令参数必须由一个冒号 `:` 来与主机列表参数分开:
 
-	$ ser 1 'ls -alh'
+	$ ser 1 2 myhost3 : 'ls -alh'
 
-或者是对所有主机执行同一个命令:	
+或者是对所有主机执行同一个命令并且直接传递选项至 SSH:
 
-	$ ser '*' 'ls -alh'
-	
-甚至是读入标准输入流到到所有主机并同时执行命令:
-
-	$ ser '*' 'cat | tee -a file' <<< 'hello'
-
-**注意**: 当重定向输入流并且目标为多个主机时，只有第一个会真实的读取输入流数据 **并且** 保存到临时文件。之后的所有操作的标准输入均定向到临时文件。
-	
-**注意: 当前批量执行远程命令传入主机列表的方式并不够方便，在未来的版本中将会修改。**
-	
-### 重定向标准输出到文件
-
-如果需要区分每条远程指令的标准输出，则可以传入指定的文件名以输出，此处的 `{name}` 会被替换为当前指令执行的主机名:
-
-	$ ser '*' 'cat | tee -a file' <<< 'hello' "redirect/stdout/to/file-{name}"
-	
-等价于:
-
-	$ ssh myhost1 'cat | tee -a file' <<< 'hello' > "redirect/stdout/to/file-myhost1"
-	$ ssh myhost2 'cat | tee -a file' <<< 'hello' > "redirect/stdout/to/file-myhost2"
-	$ ssh myhost3 'cat | tee -a file' <<< 'hello' > "redirect/stdout/to/file-myhost3"
-	...
+	$ ser -2 -4 '*' : 'echo $HOSTNAME'
 	
 ### 拷贝文件
 

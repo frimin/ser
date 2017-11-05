@@ -11,7 +11,7 @@ SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/s
 
 ## General options 
 
-VERSION='0.1.0b4#4'
+VERSION='0.1.0b5#5'
 
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
@@ -31,34 +31,32 @@ REGEXP_SPACE='[ \n\t\r\f\v]+'
 REGEXP_PATTERN_HOSTNAME='^.*[\.\*!,].*$'
 
 CMD_UNSTABLE="$COLOR_RED[UNSTABLE]$NC"
-CMD_EXPERIMENTAL="$COLOR_RED[EXPERIMENTAL]$NC"
+#CMD_EXPERIMENTAL="$COLOR_RED[EXPERIMENTAL]$NC"
 
 ## Functions 
 
 error () { echo "$1" >&2; exit 255; }
-debug_msg() { [[ $SER_DEBUG_MODE -eq 1 ]] && echo -e "${COLOR_RED}[DEBUG]${NC} $1"; }
+debug_msg() { [[ $SER_DEBUG_MODE -eq 1 ]] && echo -e "${COLOR_RED}[DEBUG]${NC} $1"; return 0; }
 trim () { while read -r line; do echo "$line"; done; }
 do_cmd () { debug_msg "\$ $*"; $1 "${@:2}"; }
 
 help () {
-    local TOKEN_HELP="{i} - config index
-    {name} - config name"
     case $1 in
         name)
-echo "Usage: $SER_BASENAME name [name] 
+echo "Usage: $SER_BASENAME name <index|pattern ...> 
 
-print config names
+print config names.
 
 examples:
-    $SER_BASENAME name
+    $SER_BASENAME name 1 2
     $SER_BASENAME name \"*\"
     $SER_BASENAME name \"my*\"
 " ;;
         cp) 
-echo -e "Usage: $SER_BASENAME cp [options] <source ...> [:] <destination_file ...> 
-       $SER_BASENAME cp [options] <source ...> [:] <destination_directory ...>
+echo -e "Usage: $SER_BASENAME cp [scp_options] <source ...> [:] <destination_file ...> 
+       $SER_BASENAME cp [scp_options] <source ...> [:] <destination_directory ...>
 
-${CMD_UNSTABLE} copy file to hosts 
+${CMD_UNSTABLE} copy file to hosts. 
 
 examples:
     # copy local file/dir to each host:
@@ -73,20 +71,15 @@ examples:
     $SER_BASENAME cp {1,2}:file \"pattern*:~/file\" : \"save/to/directory\"
     $SER_BASENAME cp -r \"*:~/directory\" \"save/to/path\"";;
         o) 
-echo -e "Usage: $SER_BASENAME [o] <index|pattern> [command] [redirect_stdout_to_filename] 
+echo -e "Usage: $SER_BASENAME [o] [ssh_options] <index|pattern ...> [: <command>] 
 
-$CMD_EXPERIMENTAL $CMD_UNSTABLE login or executed command on the remote host
+login or executed command on remote host.
 
 examples:
     $SER_BASENAME \"host1\"
     $SER_BASENAME o \"host1\"
-    $SER_BASENAME \"host1\"
-    $SER_BASENAME \"*\" \"ls\"
-    $SER_BASENAME \"*\" \"ls\" \"redirect-file-{name}\"
-    echo 'content' | $SER_BASENAME '*' 'echo \$HOSTNAME; cat'
-
-tokens:
-    $TOKEN_HELP";;
+    $SER_BASENAME o -C \"host1\" : \"ls\"
+    $SER_BASENAME \"*\" : \"ls\"";;
         tunnel-add|add)
 echo "Usage: $SER_BASENAME tunnel-add <tunnel_name> <host> local [bind_address:]<bind_port> [host:]<host_port>
        $SER_BASENAME tunnel-add <tunnel_name> <host> remote [bind_address:]<bind_port> [host>:]<host_port>
@@ -113,7 +106,7 @@ echo -e "Usage: $SER_BASENAME <command>
 Type \"$SER_BASENAME help <command>\" for help on a specific command.
 
 Available commands:
-    o|<host|pattern|index>    : Login to host. ${CMD_EXPERIMENTAL} ${CMD_UNSTABLE}
+    o|<pattern|index>         : Login to host.
     name                      : List all config name.  
     cp                        : Copy file to hosts. ${CMD_UNSTABLE}
 
@@ -248,12 +241,6 @@ next_host () {
     return 0
 }
 
-token () {
-    local s=${1//'{name}'/${HOST[0]}}
-    s=${s//'{i}'/${HOST_INDEX}}
-    echo "$s"
-}
-
 read_host_config() {
     [[ -a "$HOME/.ssh/config" ]] && CONFIG_FILES+=("$HOME/.ssh/config")
     local content=''
@@ -291,68 +278,58 @@ select_hosts () {
     done
 }
 
-ssh_connect () {
-    local stdin_store_file=/dev/null
-    local need_store=0
+ssh_connect() {
+    local passargs=()
+    
+    while getopts "1246AaCfGgKkMNnqsTtVvXxYyb:c:D:E:e:F:I:i:J:L:l:m:O:o:p:Q:R:S:W:w:" o; do
+        [[ $o == "?" ]] && exit 255
 
-    select_hosts "$1"
+        if [[ -z "$OPTARG" ]]; then
+            passargs+=("-$o")
+        else
+            passargs+=("-$o" "$OPTARG")
+        fi
+    done
 
-    # if need store stdin to tempfile ?
-    if [[ ! -t 0 ]] && [[ -n "$2" ]] && next_host && next_host; then 
-        stdin_store_file="$(mktemp)"
-        debug_msg "CREATE STDIN TEMP FILE: $stdin_store_file"
-        need_store=1
-    fi
+    shift $((OPTIND-1))
 
-    select_hosts "$1"
+    debug_msg "OPTIONS: '${passargs[*]}'"
 
-    if [[ $need_store -ne 1 ]]; then 
-        while next_host; 
-        do
-            [[ -z "$2" ]] && echo "connecting \"${HOST[0]}\""
+    local host_list=()
 
-            if [[ -n "$3" ]]; then
-                ssh "${HOST[0]}" $"$2" > "$(token "$3")" < "$stdin_store_file" || exit;
-            elif [[ -n "$2" ]]; then
-                ssh "${HOST[0]}" $"$2" || exit;
-            else
-                exec ssh "${HOST[0]}" || exit
-            fi
-        done
-    else
-        clean_tempfile() {
-            [[ $stdin_store_file != /dev/null ]] && /bin/rm -f "$stdin_store_file"
-        }
+    local cmd=''
+    local is_cmd=0
 
-        while next_host; 
-        do
-            [[ -z "$2" ]] && echo "connecting \"${HOST[0]}\""
+    [[ $# -eq 0 ]] && error "empty host list"
 
-            if [[ -n "$3" ]]; then
-                if [[ $need_store -eq 1 ]]; then
-                    tee -a "$stdin_store_file" | ssh "${HOST[0]}" $"$2" > "$(token "$3")" || { clean_tempfile; exit; }
-                else
-                    ssh "${HOST[0]}" $"$2" > "$(token "$3")" < "$stdin_store_file" || { clean_tempfile; exit; }
-                fi
-            elif [[ -n "$2" ]]; then
-                if [[ $need_store -eq 1 ]]; then
-                    tee "$stdin_store_file" | ssh "${HOST[0]}" $"$2" || { clean_tempfile; exit; }
-                else
-                    ssh "${HOST[0]}" $"$2" < "$stdin_store_file" || { clean_tempfile; exit; }
-                fi
-            else
-                exec ssh "${HOST[0]}" || exit
-            fi
+    for host in "$@"; do
+        if [[ "$is_cmd" -ne 0 ]]; then
+            debug_msg "CATCH COMMAND: $host"
+            cmd="$host"
+            break
+        fi
 
-            need_store=0
+        if [[ "$host" == ':' ]]; then 
+            is_cmd=1
+            continue
+        fi
+
+        select_hosts "${host}"
+
+        while next_host; do
+            host_list+=("${HOST[0]}")
         done
 
-        clean_tempfile
-    fi
+        [[ $HOST_INDEX -eq 0 ]] && error "host index or pattern not exists: $host"
+    done
 
-    [[ $HOST_INDEX -eq 0 ]] && error "host index or pattern not exists: $1"
-
-    exit 0
+    for host in "${host_list[@]}";do
+        if [[ -n "$cmd" ]]; then
+            do_cmd ssh "${passargs[@]}" "$host" $"$cmd" || exit
+        else
+            do_cmd ssh "${passargs[@]}" "$host" || exit
+        fi
+    done
 }
 
 read_tunnel_alived_status() {
@@ -719,7 +696,7 @@ copy() {
         for dest in "${dest_path[@]}"; do
             for src in "${src_path[@]}"; do
                 if ! do_cmd scp "${passargs[@]}" "$src" "$dest"; then
-                    exit 255
+                    exit
                 fi
             done
         done
@@ -755,16 +732,21 @@ case $1 in
     help)
         help "$2" ;;
     name)
-        select_hosts "$2"
+        shift 1
 
-        while next_host; 
-        do
-            echo "${HOST[0]}"
+        for host in "$@"; do
+            select_hosts "${host}"
+
+            while next_host; do
+                echo "${HOST[0]}"
+            done
+
+            [[ $HOST_INDEX -eq 0 ]] && error "host index or pattern not exists: $host"
         done ;;
     cp)
         copy "${@:2}" ;;
     o)
-        set -f; ssh_connect "${@:2}" ;;  
+        ssh_connect "${@:2}" ;; 
     proxy)
         select_hosts "$2"
 
@@ -961,6 +943,6 @@ case $1 in
             echo 'no update is available.'
         fi ;;
     *)
-        set -f; IFS=''; ssh_connect "$1" "$2" "$3" ;; 
+        ssh_connect "$@";; 
 esac
 
