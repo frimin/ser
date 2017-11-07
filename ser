@@ -30,7 +30,7 @@ REGEXP_TUNNEL_NAME='^[A-Za-z0-9_\-]+$'
 REGEXP_SPACE='[ \n\t\r\f\v]+'
 REGEXP_PATTERN_HOSTNAME='^.*[\.\*!,].*$'
 
-CMD_UNSTABLE="$COLOR_RED[UNSTABLE]$NC"
+#CMD_UNSTABLE="$COLOR_RED[UNSTABLE]$NC"
 #CMD_EXPERIMENTAL="$COLOR_RED[EXPERIMENTAL]$NC"
 
 ## Functions 
@@ -56,7 +56,7 @@ examples:
 echo -e "Usage: $SER_BASENAME cp [scp_options] <source ...> [:] <destination_file ...> 
        $SER_BASENAME cp [scp_options] <source ...> [:] <destination_directory ...>
 
-${CMD_UNSTABLE} copy file to hosts. 
+copy file to hosts. 
 
 examples:
     # copy local file/dir to each host:
@@ -100,6 +100,8 @@ echo "Usage: $SER_BASENAME tunnel-check
 Remember add task to crontab if you need reconnect automatic:
 
 crontab <<< '0-59 * * * * bash $SER_PATH tunnel-check' " ;;
+        proxy)
+echo "Usage: $SER_BASENAME proxy <index|pattern>" ;;
         *) 
 echo -e "Usage: $SER_BASENAME <command> 
 
@@ -108,7 +110,7 @@ Type \"$SER_BASENAME help <command>\" for help on a specific command.
 Available commands:
     o|<pattern|index>         : Login to host.
     name                      : List all config name.  
-    cp                        : Copy file to hosts. ${CMD_UNSTABLE}
+    cp                        : Copy file to hosts.
 
     tunnel-add|add            : Add forward to tunnel.
     tunnel-remove|rm          : Remove forward from tunnel. 
@@ -119,6 +121,7 @@ Available commands:
     tunnel-info|info          : List all tunnels info information.
     tunnel-check|check        : Connect enabled tunnels when disconected.
 
+    proxy                     : Connect host with '-W' option.
     update                    : Update this program to latest version, Make sure that you have sufficient permissions.
     help                      : Show this message.
 "
