@@ -7,7 +7,7 @@
 	# install
 	$ curl -s https://frimin.com/update/ser/install.sh | bash -
 	$ echo "export PATH="$HOME/.ser/bin:$PATH"" >> ~/.bash_profile
-	% source ~/.bash_profile
+	$ source ~/.bash_profile
 
 	# update
 	$ ser update
