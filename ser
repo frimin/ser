@@ -11,7 +11,7 @@ SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/s
 
 ## General options 
 
-VERSION='0.1.0b5#5'
+VERSION='0.1.0b6#6'
 
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
@@ -656,34 +656,30 @@ copy() {
     debug_msg "OPTIONS: '${passargs[*]}'"
 
     # parse hostname
-    local path_list=()
+    local src_path=()
+    local dest_path=()
+    local split_sign=0
+    local i
 
     for path in "$@"; do
+        ((i++))
         if [[ "$path" =~ ^(.+):(.+)$ ]]; then
             local filepath="${BASH_REMATCH[2]}"
             select_hosts "${BASH_REMATCH[1]}"
             while next_host; do
-                path_list+=("${HOST[0]}:${filepath}")
+                if [[ $split_sign -eq 0 && $i -ne $# ]]; then
+                    src_path+=("${HOST[0]}:${filepath}")
+                else
+                    dest_path+=("${HOST[0]}:${filepath}")
+                fi
             done
         else
-            path_list+=("$path")
-        fi
-    done
-
-    local src_path=()
-    local dest_path=()
-    local split_sign=0
-    local path_last_index=$((${#path_list[@]}-1))
-
-    for ((i=0; i!="${#path_list[@]}"; i++)); do
-        local path="${path_list[i]}"
-
-        [[ $path == ':' ]] && split_sign=1 && continue
-
-        if [[ $split_sign -eq 0 && $i -ne "$path_last_index" ]]; then
-            src_path+=("$path")
-        else
-            dest_path+=("$path")
+            [[ $path == ':' ]] && split_sign=1 && continue
+            if [[ $split_sign -eq 0 && $i -ne $# ]]; then
+                src_path+=("$path")
+            else
+                dest_path+=("$path")
+            fi
         fi
     done
 
