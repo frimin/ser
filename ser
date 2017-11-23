@@ -6,8 +6,8 @@ SER_DEBUG_MODE=${SER_DEBUG_MODE:-0}
 SER_SSH_CONFIG="${SER_SSH_CONFIG:-/etc/ssh/ssh_config:$HOME/.ssh/config}"
 SER_OPTIONS_PATH="${SER_OPTIONS_PATH:-$HOME/.ser}"
 
-SER_LAST_VERSION_URL="${SER_LAST_VERSION_URL:-https://frimin.com/update/ser/last/version}"
-SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://frimin.com/update/ser/last/ser}"
+SER_LAST_VERSION_URL="${SER_LAST_VERSION_URL:-https://raw.githubusercontent.com/frimin/ser/master/update/version}"
+SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://raw.githubusercontent.com/frimin/ser/master/ser}"
 
 ## General options 
 
