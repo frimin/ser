@@ -702,6 +702,116 @@ copy() {
     fi
 }
 
+launch_daemon() {
+    daemon_log() { echo "$(date "+%Y:%m:%d %H:%M:%S") - $*"; }
+
+    local IFS='|'
+    local fifofile="$SER_OPTIONS_PATH/ser.fifo" 
+    echo $$ > "$SER_OPTIONS_PATH/ser.pid"
+    daemon_log "launched, pid: $$ ppid: $PPID"
+
+    exec 3<>"$fifofile"
+
+    write() {
+        local IFS='|'
+        echo "-|$*" >&4
+    }
+
+    finish() {
+        echo "+|$1"
+        exec 4>&-
+    }
+
+    while :; do
+        if read -u 3 -r response cmd; then
+            daemon_log "receive command: $cmd"
+
+            exec 4>"$response"
+            /bin/rm -f "$response"
+
+            case $cmd in
+                *) 
+                    echo "unknown command: $cmd" >&2
+                    for ((i=0; i != 10; i++)); do
+                        write "${COLOR_RED}$i / 10 aa   666 !!${NC}"
+                        write "bb"
+                        write "cc"
+                        sleep 1
+                    done
+                    finish 0
+                    ;;
+            esac
+        else
+            break
+        fi
+    done
+
+    exec 3>&-
+
+    echo "done"
+}
+
+put_daemon() {
+    local IFS='|'; local response
+
+    response="$(mktemp)"
+
+    [[ -f "$response" ]] && /bin/rm -f "$response" # remove regular file
+
+    if ! mkfifo "$response"; then
+        error "failed to create FIFO: $fifofile"
+        exit 255
+    fi
+
+    # response_FIFO|command|arg1|arg2 ....
+    echo "$response|$*" >> "$SER_OPTIONS_PATH/ser.fifo"
+
+    exec 4<"$response"
+
+    while :; do
+        if read -u 4 -r t content; then
+            case "$t" in
+                -) echo -e "$content" ;;
+                +) exec 4>&-; return "$content" ;;
+            esac
+        else
+            break
+        fi
+    done
+
+    exec 4>&-
+    #DAEMON_RESULT="$content"
+    #return "$code"
+}
+
+check_daemon() {
+    local pidfile="$SER_OPTIONS_PATH/ser.pid"
+    local fifofile="$SER_OPTIONS_PATH/ser.fifo" 
+
+    if [[ "$1" == "kill" ]]; then
+        local pid; pid="$(cat "$pidfile")"
+        if kill -0 "$pid" > /dev/null 2>&1; then
+            echo -e "[${COLOR_RED}KILL DAEMON, PID: ${pid}${NC}]"
+            kill -s 9 "$pid"
+        fi
+    fi
+
+    # check pid file exists and process name 
+    if [[ ! -a "$pidfile" ]] || [[ ! "$(ps -p "$(cat "$pidfile")" -o args=)" == *launch_daemon* ]]; then
+        [[ -a "$fifofile" ]] && /bin/rm -f "$fifofile"
+        if ! mkfifo "$fifofile"; then
+            error "failed to create FIFO: $fifofile"
+            exit 255
+        fi
+        echo -e "[${COLOR_GREEN}LAUNCH DAEMON${NC}]"
+        (ser launch_daemon 0<&- > "$SER_OPTIONS_PATH/ser.out" 2>"$SER_OPTIONS_PATH"/ser.err &)
+
+        if put_daemon "start_okk" "bb"; then
+            echo "$DAEMON_RESULT"
+        fi
+    fi
+}
+
 ## Command actions
 
 [[ ! -d "$SER_OPTIONS_PATH" ]] && mkdir "$SER_OPTIONS_PATH"
@@ -941,6 +1051,10 @@ case $1 in
         else
             echo 'no update is available.'
         fi ;;
+    launch_daemon)
+        launch_daemon "${@:2}" ;;
+    check_daemon)
+        check_daemon "${@:2}" ;;
     *)
         ssh_connect "$@";; 
 esac
