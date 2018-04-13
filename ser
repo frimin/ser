@@ -335,6 +335,8 @@ ssh_connect() {
     done
 }
 
+TUNNEL_STATUS=()
+
 read_tunnel_alived_status() {
     pgrep -U "$(id -u)" -fl ssh | grep -E '^[0-9]+ ssh .*'"$SER_TUNNELS_DIRNAME"
 }
@@ -451,7 +453,8 @@ tunnel_enabled() {
 
 tunnel_connect() {
     local ssh_options=(
-        '-f'
+        '-t'
+        '-t'
         '-N'
         '-o' 'ControlMaster=auto'
         '-o' "ControlPath=$SER_TUNNELS_PATH/${TUNNEL}.sock"
@@ -482,7 +485,15 @@ tunnel_connect() {
 
     touch "${SER_TUNNELS_PATH}/${TUNNEL}.enabled" 
 
-    ssh "$target_host" $"${ssh_options[@]}" > "$SER_TUNNELS_PATH/${TUNNEL}.out" 2> "$SER_TUNNELS_PATH/${TUNNEL}.err" < /dev/null 
+    echo ssh "$target_host" $"${ssh_options[@]}"
+    # ssh "$target_host" $"${ssh_options[@]}" > "$SER_TUNNELS_PATH/${TUNNEL}.out" 2> "$SER_TUNNELS_PATH/${TUNNEL}.err" < /dev/null 
+    echo "666"
+    ssh "$target_host" $"${ssh_options[@]}" > "$SER_TUNNELS_PATH/${TUNNEL}.out" 2> "$SER_TUNNELS_PATH/${TUNNEL}.err" < /dev/null & 
+    echo "777"
+
+    jobs -l
+
+    #tunnel_status=
 }
 
 tunnel_disconnect() {
@@ -702,8 +713,36 @@ copy() {
     fi
 }
 
-launch_daemon() {
-    daemon_log() { echo "$(date "+%Y:%m:%d %H:%M:%S") - $*"; }
+d_tunnel_start() {
+    [[ -z "$1" ]] && tunnel_name='*' || tunnel_name="$1"
+
+    select_tunnel
+
+    trap 'kill -s SIGHUP $!' SIGHUP SIGINT SIGQUIT
+
+    set -f;
+
+    while next_tunnel
+    do
+        if [[ "${TUNNEL}" == ''$tunnel_name ]]; then
+            #if tunnel_enabled && tunnel_alived; then
+            #    echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL (has been started, ignore it)"
+            #    continue
+            #fi
+
+            echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL: \c"
+
+            if tunnel_connect; then
+                echo 'OK'
+            else
+                echo "FAILED, EXIT CODE: $?"
+            fi
+        fi
+    done
+}
+
+daemon_process() {
+    daemon_log() { echo "$(date "+%Y-%m-%d %H:%M:%S") - $*"; }
 
     local IFS='|'
     local fifofile="$SER_OPTIONS_PATH/ser.fifo" 
@@ -712,35 +751,24 @@ launch_daemon() {
 
     exec 3<>"$fifofile"
 
-    write() {
-        local IFS='|'
-        echo "-|$*" >&4
-    }
+    write() { local IFS='|'; echo "-|$*" >&4; }
 
-    finish() {
-        echo "+|$1"
-        exec 4>&-
-    }
+    finish() { echo "%%%|$1" >&4; exec 4>&-; }
 
     while :; do
-        if read -u 3 -r response cmd; then
-            daemon_log "receive command: $cmd"
+        if read -u 3 -r response cmd a1 a2 a3; then
+            daemon_log "start command: $cmd"
 
             exec 4>"$response"
+
             /bin/rm -f "$response"
 
-            case $cmd in
-                *) 
-                    echo "unknown command: $cmd" >&2
-                    for ((i=0; i != 10; i++)); do
-                        write "${COLOR_RED}$i / 10 aa   666 !!${NC}"
-                        write "bb"
-                        write "cc"
-                        sleep 1
-                    done
-                    finish 0
-                    ;;
-            esac
+            "${cmd}" "$a1" "$a2" "$a3" >&4
+
+            ret_code="$?"
+            finish $ret_code
+
+            daemon_log "finish command: $cmd ($ret_code)"
         else
             break
         fi
@@ -771,20 +799,17 @@ put_daemon() {
     while :; do
         if read -u 4 -r t content; then
             case "$t" in
-                -) echo -e "$content" ;;
-                +) exec 4>&-; return "$content" ;;
+                %%%) exec 4>&-; return "$content" ;;
+                *) echo -e "$t" ;;
             esac
         else
-            break
+            exec 4>&-
+            error "Response FIFO broken: $response"
         fi
     done
-
-    exec 4>&-
-    #DAEMON_RESULT="$content"
-    #return "$code"
 }
 
-check_daemon() {
+launch_daemon() {
     local pidfile="$SER_OPTIONS_PATH/ser.pid"
     local fifofile="$SER_OPTIONS_PATH/ser.fifo" 
 
@@ -794,21 +819,19 @@ check_daemon() {
             echo -e "[${COLOR_RED}KILL DAEMON, PID: ${pid}${NC}]"
             kill -s 9 "$pid"
         fi
+        return 0
     fi
 
     # check pid file exists and process name 
-    if [[ ! -a "$pidfile" ]] || [[ ! "$(ps -p "$(cat "$pidfile")" -o args=)" == *launch_daemon* ]]; then
+    if [[ ! -a "$pidfile" ]] || [[ ! "$(ps -p "$(cat "$pidfile")" -o args=)" == *daemon_process* ]]; then
         [[ -a "$fifofile" ]] && /bin/rm -f "$fifofile"
         if ! mkfifo "$fifofile"; then
             error "failed to create FIFO: $fifofile"
             exit 255
         fi
         echo -e "[${COLOR_GREEN}LAUNCH DAEMON${NC}]"
-        (ser launch_daemon 0<&- > "$SER_OPTIONS_PATH/ser.out" 2>"$SER_OPTIONS_PATH"/ser.err &)
 
-        if put_daemon "start_okk" "bb"; then
-            echo "$DAEMON_RESULT"
-        fi
+        ($0 daemon_process 0<&- > "$SER_OPTIONS_PATH/ser.out" 2>"$SER_OPTIONS_PATH"/ser.err &)
     fi
 }
 
@@ -932,30 +955,7 @@ case $1 in
         ;;
 
     tunnel-start|start)
-        [[ -z "$2" ]] && tunnel_name='*' || tunnel_name="$2"
-
-        select_tunnel
-
-        set -f;
-
-        while next_tunnel
-        do
-            if [[ "${TUNNEL}" == ''$tunnel_name ]]; then
-                if tunnel_enabled && tunnel_alived; then
-                    echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL (has been started, ignore it)"
-                    continue
-                fi
-
-                echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL: \c"
-
-                if tunnel_connect; then
-                    echo 'OK'
-                else
-                    echo "FAILED, EXIT CODE: $?"
-                fi
-            fi
-        done
-        ;;
+        launch_daemon && put_daemon "d_tunnel_start" "$2" ;;
     tunnel-stop|stop)
         [[ -z "$2" ]] && tunnel_name='*' || tunnel_name="$2"
 
@@ -1051,10 +1051,10 @@ case $1 in
         else
             echo 'no update is available.'
         fi ;;
-    launch_daemon)
-        launch_daemon "${@:2}" ;;
-    check_daemon)
-        check_daemon "${@:2}" ;;
+    daemon_process)
+        daemon_process "${@:2}" ;;
+    kill)
+        launch_daemon "kill" ;;
     *)
         ssh_connect "$@";; 
 esac
