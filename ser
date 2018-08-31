@@ -11,12 +11,13 @@ SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://raw.githubusercontent.com/fr
 
 ## General options 
 
-VERSION='0.1.0b6#6'
+VERSION='0.1.0b7#7'
 
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
 SER_HOSTS_CACHE="$SER_OPTIONS_PATH/hosts"
 SER_HOSTS_LAST_MODIFY="$SER_OPTIONS_PATH/hosts_update"
+SER_UPTIME="$SER_OPTIONS_PATH/uptime"
 SER_TUNNELS_DIRNAME='tunnels'
 SER_TUNNELS_PATH="$SER_OPTIONS_PATH/$SER_TUNNELS_DIRNAME"
 
@@ -99,7 +100,7 @@ echo "Usage: $SER_BASENAME tunnel-check
 
 Remember add task to crontab if you need reconnect automatic:
 
-crontab <<< '0-59 * * * * bash $SER_PATH tunnel-check' " ;;
+crontab <<< '* * * * * bash $SER_PATH tunnel-check' " ;;
         proxy)
 echo "Usage: $SER_BASENAME proxy <index|pattern>" ;;
         *) 
@@ -203,6 +204,28 @@ filesize() {
         *) 
             error "failed to read file size on $(uname)" ;;
     esac
+}
+
+need_refresh_tunnel() {
+    local last; local cur
+
+    [[ -a "$SER_UPTIME" ]] && last=$(cat "$SER_UPTIME") 
+
+    case $(uname) in
+        Linux) 
+            cur=$(who -b | sha1sum) ;;
+        Darwin) 
+            cur=$(who -b | shasum) ;;
+        *) 
+            error "failed to read system up time on $(uname)" ;;
+    esac
+
+    if [[ "$last" == "$cur" ]]; then
+        return 1
+    else
+        echo "$cur" > "$SER_UPTIME"
+        return 0
+    fi
 }
 
 need_refresh_cache() {
@@ -492,6 +515,7 @@ tunnel_disconnect() {
     [[ -a "$SER_TUNNELS_PATH/$TUNNEL.enabled" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.enabled" 
     [[ -a "$SER_TUNNELS_PATH/$TUNNEL.err" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.err" 
     [[ -a "$SER_TUNNELS_PATH/$TUNNEL.out" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.out" 
+    [[ -a "$SER_TUNNELS_PATH/$TUNNEL.sock" ]] && /bin/rm -f "$SER_TUNNELS_PATH/$TUNNEL.sock" 
 }
 
 read_forward_address() {
@@ -903,6 +927,10 @@ case $1 in
             fi
         done ;;
     tunnel-check|check)
+        if need_refresh_tunnel; then
+            refresh_tunnel=1 
+        fi
+
         select_tunnel
 
         while next_tunnel
@@ -914,7 +942,11 @@ case $1 in
             fi
 
             if tunnel_alived; then
-                continue
+                if [[ $refresh_tunnel -eq 1 ]]; then
+                    tunnel_disconnect
+                else
+                    continue
+                fi
             fi
            
             echo -e "[${COLOR_GREEN}START TUNNEL${NC}] - $TUNNEL: \c"
