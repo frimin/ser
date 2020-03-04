@@ -971,7 +971,7 @@ case $1 in
                 error "failed to download: $SER_LAST_SCRIPT_URL."
             fi
         else
-            echo 'no update is available.'
+            echo 'ser is up-to-date.'
         fi ;;
     *)
         ssh_connect "$@";; 
