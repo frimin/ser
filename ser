@@ -11,7 +11,7 @@ SER_LAST_SCRIPT_URL="${SER_LAST_SCRIPT_URL:-https://raw.githubusercontent.com/fr
 
 ## General options 
 
-VERSION='0.1.0b7#7'
+VERSION='0.1.0b8#8'
 
 SER_BASENAME="$(basename "$0")"
 SER_PATH="$(cd "$(dirname "$0")" && pwd)/$SER_BASENAME"
@@ -359,7 +359,7 @@ ssh_connect() {
 }
 
 read_tunnel_alived_status() {
-    pgrep -U "$(id -u)" -fl ssh | grep -E '^[0-9]+ ssh .*'"$SER_TUNNELS_DIRNAME"
+    ps -o pid,args -u $(id -u) | grep ssh | grep -E 'ssh .*'"$SER_TUNNELS_DIRNAME"
 }
 
 read_tunnel_enabled_status() {
